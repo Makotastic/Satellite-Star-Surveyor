@@ -1,0 +1,49 @@
+{
+  "name": "learning_mpc_spacecraft",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "remoteUser": "root",
+
+  "features": {},
+
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/opt/venv/bin/python",
+        "python.analysis.extraPaths": [
+          "src"
+        ],
+        "python.testing.pytestEnabled": true,
+        "python.testing.unittestEnabled": false,
+        "python.testing.pytestArgs": [
+          "tests"
+        ],
+        "editor.formatOnSave": true
+      },
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "ms-azuretools.vscode-docker",
+        "ms-vscode.cpptools"
+      ]
+    }
+  },
+
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+
+  "forwardPorts": [
+    7000
+  ],
+
+  "postCreateCommand": "pip install -r requirements-dev.txt || true && pip install -r requirements.txt || true",
+
+  "mounts": [],
+
+  "runArgs": [
+    "--network=host"
+  ]
+}

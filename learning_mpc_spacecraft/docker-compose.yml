@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  mpc_spacecraft:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    container_name: learning_mpc_spacecraft
+    volumes:
+      - .:/workspace
+      - venv:/opt/venv
+    working_dir: /workspace
+    ports:
+      - "7000:7000"  # Meshcat visualization
+      - "8888:8888"  # Jupyter notebook
+    network_mode: host
+    stdin_open: true
+    tty: true
+    environment:
+      - PYTHONPATH=/workspace/src
+      - LC_ALL=C.UTF-8
+      - LANG=C.UTF-8
+    command: bash
+
+volumes:
+  venv:
