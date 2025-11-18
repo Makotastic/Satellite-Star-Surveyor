@@ -1,3 +1,6 @@
+# syntax=docker/dockerfile:1.4
+# Enable BuildKit features for better caching and parallel builds
+
 # Start from Drake's official image (includes pydrake, solvers, etc.)
 FROM robotlocomotion/drake:latest
 
@@ -5,34 +8,38 @@ FROM robotlocomotion/drake:latest
 WORKDIR /workspace
 
 # ---- System utilities & Python tooling ----
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         git \
         curl \
         build-essential \
         python3-venv \
-        python3-pip \
         python3-dev \
         vim \
     && rm -rf /var/lib/apt/lists/*
 
+# ---- Install uv (fast Python package installer) ----
+# Install uv to /usr/local/bin for system-wide availability
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="/usr/local/bin" sh
+
 # ---- Create and use a virtual environment ----
 ENV VIRTUAL_ENV=/opt/venv
-RUN python3 -m venv ${VIRTUAL_ENV}
+RUN /usr/local/bin/uv venv ${VIRTUAL_ENV}
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
-# Upgrade pip
-RUN pip install --upgrade pip
-
-# ---- Core Python deps for this project (you can trim/adjust) ----
-# Note: pydrake is already available from the base image; DO NOT pip install it.
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install -r /tmp/requirements.txt
+
+# Install Python packages with uv (much faster than pip)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install -r /tmp/requirements.txt && \
+    rm /tmp/requirements.txt
 
 # Make sure Jupyter kernel is available in notebooks
 RUN python -m ipykernel install --name=mpc_spacecraft --display-name "Python (mpc_spacecraft)"
 
-# ---- (Optional) Locale & time zone setup, if you care ----
+# ---- Locale & time zone setup ----
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
 

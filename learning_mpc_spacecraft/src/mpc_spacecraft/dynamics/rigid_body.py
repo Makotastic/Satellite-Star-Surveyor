@@ -1,8 +1,8 @@
 """Rigid body dynamics for spacecraft attitude control."""
 
 import numpy as np
+import quaternion
 from typing import Tuple, Optional
-from .quaternion import quaternion_derivative, quaternion_normalize
 
 
 class SpacecraftDynamics:
@@ -44,30 +44,27 @@ class SpacecraftDynamics:
             disturbance: Optional disturbance torque [tau_d_x, tau_d_y, tau_d_z]
             
         Returns:
-            State derivative [dq/dt, domega/dt]
+            State derivative [dq/dt, d_omega/dt]
         """
         # Extract state components
-        q = state[:4]
+        q = np.quaternion(*state[:4])
         omega = state[4:]
         
         # Normalize quaternion
-        q = quaternion_normalize(q)
+        q = q.normalized()
         
-        # Quaternion kinematics: dq/dt = 0.5 * Omega(omega) * q
-        q_dot = quaternion_derivative(q, omega)
-        
-        # Euler's equation: J * domega/dt = -omega x (J * omega) + tau
-        J_omega = self.inertia @ omega
-        omega_cross_J_omega = np.cross(omega, J_omega)
+        # Quaternion kinematics: dq/dt = 0.5 * q * omega_body
+        q_dot = 0.5 * q * np.quaternion.from_vector_part(omega)
         
         # Total torque (control + disturbance)
         total_torque = control.copy()
         if disturbance is not None:
             total_torque += disturbance
-            
-        omega_dot = self.inertia_inv @ (total_torque - omega_cross_J_omega)
         
-        return np.concatenate([q_dot, omega_dot])
+        # Euler's equation: d_omega/dt = I^-1 @ (tau - omega x (I @ omega))
+        omega_dot = self.inertia_inv @ (total_torque - np.cross(omega, self.inertia @ omega))
+        
+        return np.concatenate([quaternion.as_float_array(q_dot), omega_dot])
     
     def discrete_dynamics_rk4(
         self,
@@ -95,7 +92,8 @@ class SpacecraftDynamics:
         next_state = state + (self.dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
         
         # Normalize quaternion
-        next_state[:4] = quaternion_normalize(next_state[:4])
+        q = np.quaternion(*next_state[:4]).normalized()
+        next_state[:4] = quaternion.as_float_array(q)
         
         return next_state
     
@@ -120,7 +118,8 @@ class SpacecraftDynamics:
         next_state = state + self.dt * state_dot
         
         # Normalize quaternion
-        next_state[:4] = quaternion_normalize(next_state[:4])
+        q = np.quaternion(*next_state[:4]).normalized()
+        next_state[:4] = quaternion.as_float_array(q)
         
         return next_state
     
@@ -147,22 +146,31 @@ class SpacecraftDynamics:
         
         # Compute A matrix (df/dx)
         A = np.zeros((7, 7))
-        f_ref = self.continuous_dynamics(state_ref, control_ref)
         
         for i in range(7):
-            state_perturbed = state_ref.copy()
-            state_perturbed[i] += epsilon
-            f_perturbed = self.continuous_dynamics(state_perturbed, control_ref)
-            A[:, i] = (f_perturbed - f_ref) / epsilon
-        
+            state_perturbed_p = state_ref.copy()
+            state_perturbed_m = state_ref.copy()
+            state_perturbed_p[i] += epsilon
+            state_perturbed_m[i] -= epsilon
+
+            f_p = self.continuous_dynamics(state_perturbed_p, control_ref)
+            f_m = self.continuous_dynamics(state_perturbed_m, control_ref)
+
+            A[:, i] = (f_p - f_m) / (2 * epsilon)
+                
         # Compute B matrix (df/du)
         B = np.zeros((7, 3))
         
         for i in range(3):
-            control_perturbed = control_ref.copy()
-            control_perturbed[i] += epsilon
-            f_perturbed = self.continuous_dynamics(state_ref, control_perturbed)
-            B[:, i] = (f_perturbed - f_ref) / epsilon
+            control_perturbed_p = state_ref.copy()
+            control_perturbed_m = state_ref.copy()
+            control_perturbed_p[i] += epsilon
+            control_perturbed_m[i] -= epsilon
+
+            f_p = self.continuous_dynamics(control_perturbed_p, control_ref)
+            f_m = self.continuous_dynamics(control_perturbed_m, control_ref)
+
+            B[:, i] = (f_p - f_m) / (2 * epsilon)
         
         return A, B
     

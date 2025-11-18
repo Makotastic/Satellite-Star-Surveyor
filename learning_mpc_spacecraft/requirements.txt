@@ -1,6 +1,7 @@
 # Core numerical libraries
 numpy>=1.21.0
 scipy>=1.7.0
+numpy-quaternion>=2023.0.0
 
 # Optimization and dynamics
 drake>=1.0.0
