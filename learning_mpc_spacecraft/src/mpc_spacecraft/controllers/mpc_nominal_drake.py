@@ -1,8 +1,9 @@
 """Nominal MPC controller using Drake as optimization backend."""
 
 import numpy as np
+import quaternion
 from typing import Optional, Callable
-from pydrake.solvers import MathematicalProgram, Solve, OsqpSolver, SnoptSolver
+from pydrake.all import MathematicalProgram, OsqpSolver, Solve  # pylint: disable=no-name-in-module
 
 
 class NominalMPC:
@@ -11,11 +12,12 @@ class NominalMPC:
     
     Uses Drake's MathematicalProgram as the optimization backend, but all
     constraints, costs, and dynamics are manually implemented.
-    """
+    """ 
     
     def __init__(
         self,
         dynamics_func: Callable,
+        linearizer_func: Callable,
         horizon: int,
         dt: float,
         state_dim: int,
@@ -46,6 +48,7 @@ class NominalMPC:
             x_max: Maximum state values (optional)
         """
         self.dynamics_func = dynamics_func
+        self.linearizer_func = linearizer_func
         self.horizon = horizon
         self.dt = dt
         self.state_dim = state_dim
@@ -57,17 +60,89 @@ class NominalMPC:
         self.u_max = u_max
         self.x_min = x_min
         self.x_max = x_max
+        self.warm_start_x = None
+        self.warm_start_u = None
         
         # Solver selection
         self.solver = OsqpSolver()
+
+    def find_initial_guesses(self,
+        x0: np.ndarray,
+        x_goal: Optional[np.ndarray] = None,
+        x_ref: Optional[np.ndarray] = None,
+        u_ref: Optional[np.ndarray] = None
+        ) -> tuple[np.ndarray, np.ndarray]:
+
+        assert x_goal or x_ref, "Need to provide either trajectory or terminal goal"
+
+        intial_x = []
+        intial_u = []
+
+        if self.warm_start_u is not None and self.warm_start_x is not None:
+            x_terminal = x_goal if x_goal else x_ref[-1]
+            intial_u = np.concat([self.warm_start_u[1:], np.zeros((1, self.control_dim))])
+            intial_x = np.concat([self.warm_start_x[1:], x_terminal])
+
+        elif x_ref is not None:
+            intial_x = x_ref
+            intial_u = u_ref if u_ref is not None else np.zeros((self.horizon, self.control_dim))
+
+        elif x_goal is not None:
+            arr_interp = np.linspace(0, 1, self.horizon + 1)
+
+            x_q = np.quaternion(*x0[:4]).normalized()
+            x_q_goal = np.quaternion(*x_goal[:4]).normalized()
+            x_q_guess = np.quaternion.slerp(x_q, x_q_goal, 0, 1, arr_interp)
+            x_q_guess = np.quaternion.as_float_array(x_q_guess).squeeze()
+
+            x_omega = x0[4:]
+            x_omega_goal = x_goal[4:]
+            x_omega_guess = (1 - arr_interp[:,None]) * x_omega[:,None].T + arr_interp[:,None] * x_omega_goal[:,None].T
+
+            intial_x = np.concatenate([x_q_guess, x_omega_guess], axis=1)
+            intial_u = np.zeros((self.horizon, self.control_dim))
+
+        return intial_x, intial_u
+    
+    def build_ref_trajectory(self,
+        x0: np.ndarray,
+        x_goal: Optional[np.ndarray] = None,
+        x_ref: Optional[np.ndarray] = None,
+        u_ref: Optional[np.ndarray] = None
+        ) -> tuple[np.ndarray, np.ndarray]:
+
+        assert x_goal or x_ref, "Need to provide either trajectory or terminal goal"
+
+        x_ref_traj = []
+        u_ref_traj = []
+
+        if x_ref is not None:
+            x_ref_traj = x_ref
+            u_ref_traj = u_ref if u_ref is not None else np.zeros((self.horizon, self.control_dim))
+
+        elif x_goal is not None:
+            arr_interp = np.linspace(0, 1, self.horizon + 1)
+
+            x_q = np.quaternion(*x0[:4]).normalized()
+            x_q_goal = np.quaternion(*x_goal[:4]).normalized()
+            x_q_guess = quaternion.slerp(x_q, x_q_goal, 0, 1, arr_interp)
+            x_q_guess = np.quaternion.as_float_array(x_q_guess).squeeze()
+
+            x_omega = x0[4:]
+            x_omega_goal = x_goal[4:]
+            x_omega_guess = (1 - arr_interp[:,None]) * x_omega[:,None].T + arr_interp[:,None] * x_omega_goal[:,None].T
+
+            x_ref_traj = np.concatenate([x_q_guess, x_omega_guess], axis=1)
+            u_ref_traj = np.zeros((self.horizon, self.control_dim))
+
+        return x_ref_traj, u_ref_traj
     
     def solve(
         self,
         x0: np.ndarray,
+        x_goal: Optional[np.ndarray] = None,
         x_ref: Optional[np.ndarray] = None,
-        u_ref: Optional[np.ndarray] = None,
-        warm_start_x: Optional[np.ndarray] = None,
-        warm_start_u: Optional[np.ndarray] = None
+        u_ref: Optional[np.ndarray] = None
     ) -> tuple[np.ndarray, np.ndarray, bool]:
         """
         Solve the MPC optimization problem.
@@ -76,44 +151,38 @@ class NominalMPC:
             x0: Initial state
             x_ref: Reference state trajectory (horizon+1 x state_dim)
             u_ref: Reference control trajectory (horizon x control_dim)
-            warm_start_x: Warm start for state trajectory
-            warm_start_u: Warm start for control trajectory
             
         Returns:
             u_opt: Optimal control sequence (horizon x control_dim)
             x_opt: Optimal state trajectory (horizon+1 x state_dim)
             success: Whether optimization succeeded
         """
-        # Set default references
-        if x_ref is None:
-            x_ref = np.zeros((self.horizon + 1, self.state_dim))
-        if u_ref is None:
-            u_ref = np.zeros((self.horizon, self.control_dim))
-        
-        # Create optimization program
+
+        assert x_goal or x_ref, "Need to provide either trajectory or terminal goal"
+
         prog = MathematicalProgram()
-        
-        # Decision variables
-        x = prog.NewContinuousVariables(
-            self.horizon + 1, self.state_dim, "x"
-        )
-        u = prog.NewContinuousVariables(
-            self.horizon, self.control_dim, "u"
-        )
-        
+
+        x = prog.NewContinuousVariables(self.horizon + 1, self.state_dim, "x")
+        u = prog.NewContinuousVariables(self.horizon, self.control_dim, "u")
+
+        intial_x, intial_u = self.find_initial_guesses(x0, x_goal, x_ref, u_ref)
+
+        x_ref_traj, u_ref_traj = self.build_ref_trajectory(x0, x_goal, x_ref, u_ref)
+
         # Initial condition constraint
         prog.AddLinearEqualityConstraint(x[0], x0)
-        
-        # Dynamics constraints
+
+        # Dynamic Contraints
         for k in range(self.horizon):
-            x_next = self.dynamics_func(x[k], u[k])
-            prog.AddConstraint(
-                lambda vars, x_next=x_next: vars - x_next,
-                lb=np.zeros(self.state_dim),
-                ub=np.zeros(self.state_dim),
-                vars=x[k + 1]
-            )
-        
+            # x_kp1 = g(x_k,u_k) = g(x_d_k,x_d_k) + A @ (x_k - x_d_k) + B @ (u_k - u_d_k)
+            # x_kp1 = A @ x_k + B @ u_k + g(x_d_k,x_d_k) - A @ x_d_k - B @ u_d_k
+            # x_kp1 - A @ x_k + B @ u_k = g(x_d_k,x_d_k) - A @ x_d_k - B @ u_d_k
+
+            A_k, B_k = self.linearizer_func(intial_x[k], intial_u[k])
+            right = self.dynamics_func(intial_x[k], intial_u[k]) - A_k @ intial_x[k] - B_k @ intial_u[k]
+            left = x[k+1] - A_k @ x[k] - B_k @ u[k]
+            prog.AddLinearEqualityConstraint(left, right)
+
         # Control constraints
         if self.u_min is not None or self.u_max is not None:
             for k in range(self.horizon):
@@ -125,67 +194,35 @@ class NominalMPC:
                     prog.AddLinearConstraint(
                         u[k] <= self.u_max
                     )
-        
-        # State constraints (optional)
-        if self.x_min is not None or self.x_max is not None:
-            for k in range(self.horizon + 1):
-                if self.x_min is not None:
-                    prog.AddLinearConstraint(
-                        x[k] >= self.x_min
-                    )
-                if self.x_max is not None:
-                    prog.AddLinearConstraint(
-                        x[k] <= self.x_max
-                    )
-        
-        # Stage costs
+
+        # Stage Costs
         for k in range(self.horizon):
-            x_error = x[k] - x_ref[k]
-            u_error = u[k] - u_ref[k]
-            
-            # Quadratic cost: (x-x_ref)^T Q (x-x_ref) + (u-u_ref)^T R (u-u_ref)
-            prog.AddQuadraticCost(
-                self.Q,
-                -2 * self.Q @ x_ref[k],
-                x[k]
-            )
-            prog.AddQuadraticCost(
-                self.R,
-                -2 * self.R @ u_ref[k],
-                u[k]
-            )
+            prog.AddQuadraticErrorCost(self.Q, x_ref_traj[k], x[k])
+            prog.AddQuadraticErrorCost(self.R, u_ref_traj[k], u[k])
         
-        # Terminal cost
-        x_error_terminal = x[self.horizon] - x_ref[self.horizon]
-        prog.AddQuadraticCost(
-            self.Q_terminal,
-            -2 * self.Q_terminal @ x_ref[self.horizon],
-            x[self.horizon]
-        )
+        # Terminal Cost
+        prog.AddQuadraticErrorCost(self.Q_terminal, x_ref_traj[self.horizon], x[self.horizon])
         
-        # Warm start (optional)
-        if warm_start_x is not None and warm_start_u is not None:
-            initial_guess = np.concatenate([
-                warm_start_x.flatten(),
-                warm_start_u.flatten()
-            ])
-            prog.SetInitialGuess(
-                np.concatenate([x.flatten(), u.flatten()]),
-                initial_guess
-            )
-        
-        # Solve
-        result = Solve(prog)
-        
-        # Extract solution
-        success = result.is_success()
-        if success:
+        # Intial Guess
+        prog.SetInitialGuess(x, intial_x)
+        prog.SetInitialGuess(u, intial_u)
+
+        result = self.solver.Solve(prog)
+
+        if success := result.is_success():
             x_opt = result.GetSolution(x)
             u_opt = result.GetSolution(u)
+
+            self.warm_start_x = x_opt
+            self.warm_start_u = u_opt
+
         else:
             # Return zeros if optimization failed
             x_opt = np.zeros((self.horizon + 1, self.state_dim))
             u_opt = np.zeros((self.horizon, self.control_dim))
+
+            self.warm_start_x = None
+            self.warm_start_u = None
         
         return u_opt, x_opt, success
     
@@ -206,7 +243,7 @@ class NominalMPC:
         Returns:
             First control input u[0]
         """
-        u_opt, _, success = self.solve(x0, x_ref, u_ref)
+        u_opt, _, success = self.solve(x0, x_ref=x_ref, u_ref=u_ref)
         
         if not success:
             print("Warning: MPC optimization failed, returning zero control")

@@ -37,7 +37,7 @@ class LQRController:
         self.discrete = discrete
         
         # Compute LQR gain
-        self.K, self.P = self.compute_lqr_gain()
+        self.K, self.S = self.compute_lqr_gain()
     
     def compute_lqr_gain(self) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -45,18 +45,18 @@ class LQRController:
         
         Returns:
             K: Feedback gain matrix (m x n)
-            P: Solution to Riccati equation (n x n)
+            S: Solution to Riccati equation (n x n)
         """
         if self.discrete:
             # Discrete-time Algebraic Riccati Equation (DARE)
-            P = solve_discrete_are(self.A, self.B, self.Q, self.R)
-            K = np.linalg.inv(self.R + self.B.T @ P @ self.B) @ (self.B.T @ P @ self.A)
+            S = solve_discrete_are(self.A, self.B, self.Q, self.R)
+            K = np.linalg.inv(self.R + self.B.T @ S @ self.B) @ (self.B.T @ S @ self.A)
         else:
             # Continuous-time Algebraic Riccati Equation (CARE)
-            P = solve_continuous_are(self.A, self.B, self.Q, self.R)
-            K = np.linalg.inv(self.R) @ (self.B.T @ P)
+            S = solve_continuous_are(self.A, self.B, self.Q, self.R)
+            K = np.linalg.inv(self.R) @ (self.B.T @ S)
         
-        return K, P
+        return K, S
     
     def compute_control(
         self,
@@ -76,8 +76,7 @@ class LQRController:
         if state_ref is None:
             state_ref = np.zeros_like(state)
         
-        state_error = state - state_ref
-        control = -self.K @ state_error
+        control = -self.K @ (state - state_ref)
         
         return control
     
@@ -141,7 +140,7 @@ class LQRController:
         """
         Compute the cost-to-go (value function) for a given state.
         
-        V(x) = x^T P x
+        V(x) = x^T S x
         
         Args:
             state: State vector
@@ -149,4 +148,4 @@ class LQRController:
         Returns:
             Cost-to-go value
         """
-        return float(state.T @ self.P @ state)
+        return float(state.T @ self.S @ state)
