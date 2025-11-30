@@ -1,22 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "mpc_spacecraft"
-version = "0.1.0"
-description = "Learning-Augmented MPC for Spacecraft"
+name = "mpc-spacecraft"
+dynamic = ["version"]
+description = "Model Predictive Control for Spacecraft Attitude"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
     "numpy>=1.21.0",
     "scipy>=1.7.0",
-    "torch>=2.0.0",
+    "numpy-quaternion>=2023.0.0",
     "drake>=1.0.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
     "meshcat>=0.3.0",
     "matplotlib>=3.5.0",
     "pyvista>=0.40.0",
     "vispy>=0.12.0",
-]
-
-[project.optional-dependencies]
-dev = [
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",
     "black>=22.0.0",
@@ -24,21 +26,24 @@ dev = [
     "mypy>=0.950",
     "jupyter>=1.0.0",
     "ipykernel>=6.0.0",
+    "notebook>=6.4.0",
+    "tqdm>=4.60.0",
+    "pyyaml>=6.0",
 ]
 
-[build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+[project.optional-dependencies]
+dev = [
+    "pre-commit",
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.black]
-line-length = 100
-target-version = ['py38', 'py39', 'py310', 'py311']
+[tool.hatch.build.targets.wheel.shared-data]
+"mpc_spacecraft.config" = "src/mpc_spacecraft/config"
 
 [tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
 testpaths = ["tests"]
-python_files = "test_*.py"
-python_classes = "Test*"
-python_functions = "test_*"
+markers = [
+    "unit: marks tests as unit tests",
+    "integration: marks tests as integration tests",
+]

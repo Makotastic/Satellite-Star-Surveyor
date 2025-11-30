@@ -54,7 +54,7 @@ class SpacecraftDynamics:
         q = q.normalized()
         
         # Quaternion kinematics: dq/dt = 0.5 * q * omega_body
-        q_dot = 0.5 * q * np.quaternion.from_vector_part(omega)
+        q_dot = 0.5 * q * quaternion.from_vector_part(omega)
         
         # Total torque (control + disturbance)
         total_torque = control.copy()
@@ -123,55 +123,146 @@ class SpacecraftDynamics:
         
         return next_state
     
+    def quaternion_error(self, q: np.quaternion, q_ref: np.quaternion) -> np.ndarray:
+        """
+        Compute small-angle error vector delta_theta such that
+        q ≈ q_ref * [1, 0.5*delta_theta]^T near the reference.
+        """
+        # Error quaternion: q_err = q_ref* * q
+        q_err = q_ref.conjugate() * q
+        q_err = q_err.normalized()
+        
+        # For small error, q_err ≈ [1, 0.5*delta_theta]
+        delta_theta = 2.0 * quaternion.as_vector_part(q_err)
+        return delta_theta
+
+
+    def state_error(self, state: np.ndarray, state_ref: np.ndarray) -> np.ndarray:
+        """
+        Map full state and reference state to 6D error state [delta_theta, delta_omega].
+        """
+        q = np.quaternion(*state[:4]).normalized()
+        omega = state[4:]
+        
+        q_ref = np.quaternion(*state_ref[:4]).normalized()
+        omega_ref = state_ref[4:]
+        
+        delta_theta = self.quaternion_error(q, q_ref)
+        delta_omega = omega - omega_ref
+        
+        return np.concatenate([delta_theta, delta_omega])
+
+    def state_from_error(
+    self,
+    delta_x: np.ndarray,
+    state_ref: np.ndarray
+    ) -> np.ndarray:
+        """
+        Reconstruct full state [q, omega] from error state [delta_theta, delta_omega]
+        and reference state.
+        """
+        delta_theta = delta_x[:3]
+        delta_omega = delta_x[3:]
+        
+        q_ref = np.quaternion(*state_ref[:4]).normalized()
+        omega_ref = state_ref[4:]
+        
+        # Small-error quaternion: dq ≈ [1, 0.5*delta_theta]
+        dq = np.quaternion(1.0, *(0.5 * delta_theta))
+        dq = dq.normalized()
+        
+        # Compose attitude: q = q_ref * dq
+        q = q_ref * dq
+        q = q.normalized()
+        
+        omega = omega_ref + delta_omega
+        
+        state = np.empty(7)
+        state[:4] = quaternion.as_float_array(q)
+        state[4:] = omega
+        return state
+
+    
     def linearize(
-        self,
-        state_ref: np.ndarray,
-        control_ref: np.ndarray
+    self,
+    state_ref: np.ndarray,
+    control_ref: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Linearize dynamics around a reference trajectory point.
-        
-        Returns A, B matrices for: dx = A*dx + B*du
-        
-        Args:
-            state_ref: Reference state
-            control_ref: Reference control
-            
-        Returns:
-            A: State transition matrix (7x7)
-            B: Control input matrix (7x3)
-        """
-        # Numerical differentiation for linearization
-        epsilon = 1e-6
-        
-        # Compute A matrix (df/dx)
-        A = np.zeros((7, 7))
-        
-        for i in range(7):
-            state_perturbed_p = state_ref.copy()
-            state_perturbed_m = state_ref.copy()
-            state_perturbed_p[i] += epsilon
-            state_perturbed_m[i] -= epsilon
+        Linearize error dynamics around a reference trajectory point.
 
-            f_p = self.continuous_dynamics(state_perturbed_p, control_ref)
-            f_m = self.continuous_dynamics(state_perturbed_m, control_ref)
+        Returns A, B matrices for: d(delta_x)/dt = A*delta_x + B*delta_u
+
+        where delta_x = [delta_theta, delta_omega].
+
+        Args:
+            state_ref: Reference state [q_ref, omega_ref]
+            control_ref: Reference control
+
+        Returns:
+            A: 6x6 state transition matrix
+            B: 6x3 control input matrix
+        """
+        epsilon = 1e-6
+
+        n = 6  # error state dimension
+        m = 3  # control dimension
+
+        A = np.zeros((n, n))
+        B = np.zeros((n, m))
+
+        # Helper: computes error-state derivative for given delta_x, delta_u
+        def f_err(delta_x: np.ndarray, delta_u: np.ndarray) -> np.ndarray:
+            # Build actual state and control from errors
+            state = self.state_from_error(delta_x, state_ref)
+            control = control_ref + delta_u
+
+            # Continuous dynamics on full state
+            state_dot = self.continuous_dynamics(state, control)
+
+            # Map state_dot to error derivative:
+            # We approximate this numerically via a small step, to avoid deriving it analytically.
+
+            dt_small = 1e-4  # small internal step for numerical derivative mapping
+
+            # Step forward in full state:
+            state_next = state + dt_small * state_dot
+
+            # Compute error at t and t+dt_small:
+            err_now = self.state_error(state, state_ref)
+            err_next = self.state_error(state_next, state_ref)
+
+            # Approximate error derivative:
+            err_dot = (err_next - err_now) / dt_small
+            return err_dot
+
+        # A matrix: df_err / d(delta_x)
+        delta_x0 = np.zeros(n)
+        delta_u0 = np.zeros(m)
+
+        for i in range(n):
+            dx_p = delta_x0.copy()
+            dx_m = delta_x0.copy()
+            dx_p[i] += epsilon
+            dx_m[i] -= epsilon
+
+            f_p = f_err(dx_p, delta_u0)
+            f_m = f_err(dx_m, delta_u0)
 
             A[:, i] = (f_p - f_m) / (2 * epsilon)
-                
-        # Compute B matrix (df/du)
-        B = np.zeros((7, 3))
-        
-        for i in range(3):
-            control_perturbed_p = state_ref.copy()
-            control_perturbed_m = state_ref.copy()
-            control_perturbed_p[i] += epsilon
-            control_perturbed_m[i] -= epsilon
 
-            f_p = self.continuous_dynamics(control_perturbed_p, control_ref)
-            f_m = self.continuous_dynamics(control_perturbed_m, control_ref)
+        # B matrix: df_err / d(delta_u)
+        for i in range(m):
+            du_p = delta_u0.copy()
+            du_m = delta_u0.copy()
+            du_p[i] += epsilon
+            du_m[i] -= epsilon
+
+            f_p = f_err(delta_x0, du_p)
+            f_m = f_err(delta_x0, du_m)
 
             B[:, i] = (f_p - f_m) / (2 * epsilon)
-        
+
         return A, B
     
     def discretize_linear_system(

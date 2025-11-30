@@ -1,8 +1,8 @@
 """Scenario generation for testing controllers."""
 
 import numpy as np
+import quaternion
 from typing import Callable, Optional, Tuple
-from ..dynamics.quaternion import quaternion_normalize
 
 
 class ScenarioGenerator:
@@ -28,7 +28,8 @@ class ScenarioGenerator:
         if q_target is None:
             q_target = np.array([1.0, 0.0, 0.0, 0.0])
         
-        q_target = quaternion_normalize(q_target)
+        q_target = np.quaternion(*q_target).normalized()
+        q_target = np.quaternion.as_float_array(q_target)
         
         def reference_trajectory(t: float) -> np.ndarray:
             """Return reference state at time t."""
@@ -51,40 +52,21 @@ class ScenarioGenerator:
             q_initial: Initial quaternion
             q_final: Final quaternion
             duration: Maneuver duration
-            dt: Timestep
             
         Returns:
             Reference trajectory function
         """
-        q_initial = quaternion_normalize(q_initial)
-        q_final = quaternion_normalize(q_final)
+
+        q_initial = np.quaternion(*q_initial).normalized()
+
+        q_final = np.quaternion(*q_final).normalized()
         
         def reference_trajectory(t: float) -> np.ndarray:
             """Return reference state at time t using SLERP."""
-            # Spherical linear interpolation (SLERP)
-            alpha = min(t / duration, 1.0)
             
-            # Compute angle between quaternions
-            dot = np.dot(q_initial, q_final)
-            
-            # Ensure shortest path
-            if dot < 0:
-                q_final_adjusted = -q_final
-                dot = -dot
-            else:
-                q_final_adjusted = q_final
-            
-            # SLERP interpolation
-            if dot > 0.9995:
-                # Linear interpolation for very close quaternions
-                q_ref = (1 - alpha) * q_initial + alpha * q_final_adjusted
-            else:
-                theta = np.arccos(np.clip(dot, -1.0, 1.0))
-                sin_theta = np.sin(theta)
-                q_ref = (np.sin((1 - alpha) * theta) / sin_theta) * q_initial + \
-                        (np.sin(alpha * theta) / sin_theta) * q_final_adjusted
-            
-            q_ref = quaternion_normalize(q_ref)
+            q_ref = np.quaternion.slerp(q_initial, q_final, 0, duration, t).normalized()
+
+            q_ref = np.quaternion.as_float_array(q_ref)
             
             # Zero angular velocity reference
             omega_ref = np.zeros(3)
@@ -113,20 +95,8 @@ class ScenarioGenerator:
         def reference_trajectory(t: float) -> np.ndarray:
             """Return reference state at time t."""
             # Integrate angular velocity to get quaternion
-            omega_mag = np.linalg.norm(omega_target)
-            
-            if omega_mag < 1e-6:
-                q_ref = np.array([1.0, 0.0, 0.0, 0.0])
-            else:
-                axis = omega_target / omega_mag
-                angle = omega_mag * t
-                
-                q_ref = np.array([
-                    np.cos(angle / 2),
-                    axis[0] * np.sin(angle / 2),
-                    axis[1] * np.sin(angle / 2),
-                    axis[2] * np.sin(angle / 2)
-                ])
+
+            q_ref = np.quaternion.integrate_angular_velocity(omega_target, 0, t)
             
             return np.concatenate([q_ref, omega_target])
         
@@ -164,14 +134,17 @@ class ScenarioGenerator:
                 t0, t1 = times[idx - 1], times[idx]
                 x0, x1 = waypoints[idx - 1], waypoints[idx]
                 
-                # Linear interpolation
+                x_q_0 = np.quaternion(*x0[:4]).normalized()
+                x_q_1 = np.quaternion(*x1[:4]).normalized()
+                x_q_ref = np.quaternion.slerp(x_q_0, x_q_1, t0, t1, t).normalized()
+                x_q_ref = np.quaternion.as_float_array(x_q_ref).squeeze()
+
+                x_w_0 = x0[4:]
+                x_w_1 = x1[4:]
                 alpha = (t - t0) / (t1 - t0)
-                x_ref = (1 - alpha) * x0 + alpha * x1
+                x_w_ref = (1 - alpha) * x_w_0 + alpha * x_w_1
                 
-                # Normalize quaternion part
-                x_ref[:4] = quaternion_normalize(x_ref[:4])
-                
-                return x_ref
+                return np.concatenate([x_q_ref, x_w_ref])
         
         return reference_trajectory
 
@@ -234,7 +207,7 @@ def generate_random_initial_conditions(
         
         # Random angle
         angle = np.random.uniform(0, max_angle)
-        
+
         # Quaternion from axis-angle
         q = np.array([
             np.cos(angle / 2),
