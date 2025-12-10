@@ -74,8 +74,7 @@ def train_residual_model(
         optimizer,
         mode='min',
         factor=0.5,
-        patience=10,
-        verbose=verbose
+        patience=10
     )
     
     # Training history

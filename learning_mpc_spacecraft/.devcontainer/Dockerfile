@@ -7,17 +7,20 @@ FROM robotlocomotion/drake:latest
 # Set a dedicated workspace directory
 WORKDIR /workspace
 
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
 # ---- System utilities & Python tooling ----
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        git \
-        curl \
-        build-essential \
-        python3-venv \
-        python3-dev \
-        vim \
+    git \
+    curl \
+    build-essential \
+    python3-venv \
+    python3-dev \
+    vim \
     && rm -rf /var/lib/apt/lists/*
 
 # ---- Install uv (fast Python package installer) ----

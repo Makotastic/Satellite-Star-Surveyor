@@ -19,7 +19,6 @@ class NominalMPC:
         self,
         horizon: int,
         dynamics: SpacecraftDynamics,
-        dt: float,
         Q: np.ndarray,
         R: np.ndarray,
         Q_terminal: Optional[np.ndarray] = None,
@@ -45,7 +44,6 @@ class NominalMPC:
                            for the goal-only (non-tracking) case.
         """
         self.horizon = horizon
-        self.dt = dt
         self.dynamics = dynamics
 
         self.state_dim = 7
@@ -102,14 +100,8 @@ class NominalMPC:
             x_terminal = x_goal if x_goal is not None else x_ref[-1]
 
             # Shift previous solution one step and append terminal/zero
-            initial_u = np.concatenate(
-                [self.warm_start_u[1:], np.zeros((1, self.control_dim))],
-                axis=0,
-            )
-            initial_x = np.concatenate(
-                [self.warm_start_x[1:], x_terminal[None, :]],
-                axis=0,
-            )
+            initial_u = np.concatenate([self.warm_start_u[1:], np.zeros((1, self.control_dim))], axis=0)
+            initial_x = np.concatenate([self.warm_start_x[1:], x_terminal[None, :]], axis=0)
 
         # 2) Full reference provided → just use it as nominal
         elif x_ref is not None:
@@ -280,22 +272,17 @@ class NominalMPC:
             #    - terminal cost: dx(N)^T Q_terminal dx(N)
             for k in range(self.horizon):
                 prog.AddQuadraticCost(self.Q, np.zeros(n_err), dx[k], is_convex=True)
-                prog.AddQuadraticCost(
-                    self.R, np.zeros(self.control_dim), du[k], is_convex=True
-                )
+                prog.AddQuadraticCost(self.R, np.zeros(self.control_dim), du[k], is_convex=True)
 
             prog.AddQuadraticCost(
-                self.Q_terminal, np.zeros(n_err), dx[self.horizon], is_convex=True
-            )
+                self.Q_terminal, np.zeros(n_err), dx[self.horizon], is_convex=True)
 
             # 7) Initial guesses in error coordinates
             initial_dx = np.zeros((self.horizon + 1, n_err))
             initial_du = np.zeros((self.horizon, self.control_dim))
 
             for k in range(self.horizon + 1):
-                initial_dx[k] = self.dynamics.state_error(
-                    x_nom_traj[k], x_cost_traj[k]
-                )
+                initial_dx[k] = self.dynamics.state_error(x_nom_traj[k], x_cost_traj[k])
 
             for k in range(self.horizon):
                 initial_du[k] = u_nom_traj[k] - u_cost_traj[k]
@@ -353,9 +340,7 @@ class NominalMPC:
 
         return best_u_opt, best_x_opt, True
 
-    # -------------------------------------------------------------------------
-    # Receding-horizon helper
-    # -------------------------------------------------------------------------
+
     def get_first_control(
         self,
         x0: np.ndarray,

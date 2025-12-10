@@ -5,9 +5,7 @@
     "context": ".."
   },
   "remoteUser": "root",
-
   "features": {},
-
   "customizations": {
     "vscode": {
       "settings": {
@@ -31,17 +29,14 @@
       ]
     }
   },
-
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
-
   "forwardPorts": [
     7000
   ],
-
   "mounts": [],
-
   "runArgs": [
-    "--network=host"
+    "--network=host",
+    "--gpus=all"
   ]
 }

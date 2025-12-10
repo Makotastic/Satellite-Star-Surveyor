@@ -168,6 +168,48 @@ def compute_quaternion_error(
     return error
 
 
+def compute_quaternion_trajectory_errors(
+    states: np.ndarray,
+    goal_quat: np.ndarray
+) -> np.ndarray:
+    """
+    Compute quaternion angle errors for entire trajectory.
+    
+    Args:
+        states: State trajectory [N, 7] with quaternions in first 4 columns
+        goal_quat: Goal quaternion [4]
+        
+    Returns:
+        Array of angle errors [N]
+    """
+    quat_errors = []
+    for s in states:
+        error = compute_quaternion_error(s[:4], goal_quat)
+        quat_errors.append(error)
+    return np.array(quat_errors)
+
+
+def compute_velocity_errors(
+    states: np.ndarray,
+    goal_omega: np.ndarray = np.zeros(3)
+) -> np.ndarray:
+    """
+    Compute angular velocity errors for trajectory.
+    
+    Args:
+        states: State trajectory [N, 7] with omega in last 3 columns
+        goal_omega: Goal angular velocity [3] (default zero)
+        
+    Returns:
+        Array of velocity error norms [N]
+    """
+    omega_errors = []
+    for s in states:
+        omega_error = np.linalg.norm(s[4:] - goal_omega)
+        omega_errors.append(omega_error)
+    return np.array(omega_errors)
+
+
 def compute_performance_index(
     states: np.ndarray,
     controls: np.ndarray,
@@ -197,6 +239,7 @@ def compute_performance_index(
     # State cost
     for i in range(len(states) - 1):
         x_error = states[i] - references[i]
+
         state_cost = x_error.T @ Q @ x_error
         
         control_cost = controls[i].T @ R @ controls[i]
@@ -213,8 +256,6 @@ def compute_performance_index(
 def compare_controllers(
     results: Dict[str, Dict[str, np.ndarray]],
     dt: float,
-    Q: Optional[np.ndarray] = None,
-    R: Optional[np.ndarray] = None
 ) -> Dict[str, Dict[str, float]]:
     """
     Compare multiple controller results.
@@ -224,6 +265,7 @@ def compare_controllers(
         dt: Timestep
         Q: State cost matrix (optional)
         R: Control cost matrix (optional)
+        dynamics: Optional dynamics model for error state computation
         
     Returns:
         Dictionary of {controller_name: metrics}
@@ -248,11 +290,6 @@ def compare_controllers(
         # Stability
         stability = compute_stability_metrics(states)
         metrics.update({f'stability_{k}': v for k, v in stability.items()})
-        
-        # Performance index
-        if Q is not None and R is not None:
-            cost = compute_performance_index(states, controls, references, Q, R, dt)
-            metrics['total_cost'] = cost
         
         comparison[name] = metrics
     

@@ -19,6 +19,8 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+*.npz
+*.pth
 
 # Virtual environments
 venv/
@@ -48,6 +50,10 @@ experiments/results/*.png
 experiments/results/*.pdf
 reports/figures/*.png
 reports/figures/*.pdf
+
+reports/*
+!reports/*.pdf
+!reports/*.tex
 
 # OS
 .DS_Store
