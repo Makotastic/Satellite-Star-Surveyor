@@ -4,6 +4,7 @@
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{booktabs}
+\usepackage{array}
 \usepackage{algorithmic}
 \usepackage{graphicx}
 \usepackage{textcomp}
@@ -266,8 +267,7 @@ In addition to model uncertainty, these disturbances were included:
     \centering
     \caption{Controller Computational Performance}
     \label{tab:computational_performance}
-    \begin{tabular}{lc}
-        \large
+    \begin{tabular}{>{\large}l>{\large}c}
         \toprule
         \textbf{Controller} & \textbf{Performance} \\
         \midrule
