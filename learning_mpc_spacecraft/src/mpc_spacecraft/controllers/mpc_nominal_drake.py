@@ -1,10 +1,10 @@
 """Nominal MPC controller using Drake as optimization backend."""
 
 import numpy as np
-import quaternion
-from typing import Optional
+import quaternion as qu
 from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
 from ..dynamics.rigid_body import SpacecraftDynamics
+from mpc_spacecraft.utilities.utils import FloatArray
 
 
 class NominalMPC:
@@ -19,13 +19,13 @@ class NominalMPC:
         self,
         horizon: int,
         dynamics: SpacecraftDynamics,
-        Q: np.ndarray,
-        R: np.ndarray,
-        Q_terminal: Optional[np.ndarray] = None,
-        u_min: Optional[np.ndarray] = None,
-        u_max: Optional[np.ndarray] = None,
-        x_min: Optional[np.ndarray] = None,
-        x_max: Optional[np.ndarray] = None,
+        Q: FloatArray,
+        R: FloatArray,
+        Q_terminal: FloatArray | None = None,
+        u_min: FloatArray | None = None,
+        u_max: FloatArray | None = None,
+        x_min: FloatArray | None = None,
+        x_max: FloatArray | None = None,
         max_sqp_iters: int = 2,
     ):
         """
@@ -58,14 +58,11 @@ class NominalMPC:
         self.x_min = x_min
         self.x_max = x_max
 
-        # How many real-time iteration / SQP steps we do per call to solve()
         self.max_sqp_iters = max_sqp_iters
 
-        # Warm starts across MPC calls (absolute trajectories)
         self.warm_start_x = None  # shape (N+1, 7)
         self.warm_start_u = None  # shape (N, 3)
 
-        # Solver selection
         self.solver = OsqpSolver()
 
     # -------------------------------------------------------------------------
@@ -73,11 +70,11 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     def find_initial_guesses(
         self,
-        x0: np.ndarray,
-        x_goal: Optional[np.ndarray] = None,
-        x_ref: Optional[np.ndarray] = None,
-        u_ref: Optional[np.ndarray] = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
+        x0: FloatArray,
+        x_goal: FloatArray | None = None,
+        x_ref: FloatArray | None = None,
+        u_ref: FloatArray | None = None,
+    ) -> tuple[FloatArray, FloatArray]:
         """
         Build an initial *nominal* guess for (state, control) along the horizon.
 
@@ -100,8 +97,12 @@ class NominalMPC:
             x_terminal = x_goal if x_goal is not None else x_ref[-1]
 
             # Shift previous solution one step and append terminal/zero
-            initial_u = np.concatenate([self.warm_start_u[1:], np.zeros((1, self.control_dim))], axis=0)
-            initial_x = np.concatenate([self.warm_start_x[1:], x_terminal[None, :]], axis=0)
+            initial_u = np.concatenate(
+                [self.warm_start_u[1:], np.zeros((1, self.control_dim))], axis=0
+            )
+            initial_x = np.concatenate(
+                [self.warm_start_x[1:], x_terminal[None, :]], axis=0
+            )
 
         # 2) Full reference provided → just use it as nominal
         elif x_ref is not None:
@@ -116,18 +117,17 @@ class NominalMPC:
             arr_interp = np.linspace(0.0, 1.0, self.horizon + 1)
 
             # Quaternion slerp for attitudes
-            x_q = np.quaternion(*x0[:4]).normalized()
-            x_q_goal = np.quaternion(*x_goal[:4]).normalized()
-            x_q_guess = quaternion.slerp(x_q, x_q_goal, 0.0, 1.0, arr_interp)
-            x_q_guess = quaternion.as_float_array(x_q_guess).squeeze()
+            x_q = qu.quaternion(*x0[:4]).normalized()
+            x_q_goal = qu.quaternion(*x_goal[:4]).normalized()
+            x_q_guess = qu.slerp(x_q, x_q_goal, 0.0, 1.0, arr_interp)
+            x_q_guess = qu.as_float_array(x_q_guess).squeeze()
 
             # Linear interpolation for angular velocity
             x_omega = x0[4:]
             x_omega_goal = x_goal[4:]
-            x_omega_guess = (
-                (1.0 - arr_interp[:, None]) * x_omega[None, :]
-                + arr_interp[:, None] * x_omega_goal[None, :]
-            )
+            x_omega_guess = (1.0 - arr_interp[:, None]) * x_omega[None, :] + arr_interp[
+                :, None
+            ] * x_omega_goal[None, :]
 
             initial_x = np.concatenate([x_q_guess, x_omega_guess], axis=1)
             initial_u = np.zeros((self.horizon, self.control_dim))
@@ -139,11 +139,11 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     def build_ref_trajectory(
         self,
-        x0: np.ndarray,
-        x_goal: Optional[np.ndarray] = None,
-        x_ref: Optional[np.ndarray] = None,
-        u_ref: Optional[np.ndarray] = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
+        x0: FloatArray,
+        x_goal: FloatArray | None = None,
+        x_ref: FloatArray | None = None,
+        u_ref: FloatArray | None = None,
+    ) -> tuple[FloatArray, FloatArray]:
         """
         Build the *cost reference* trajectory (x_cost_traj, u_cost_traj).
 
@@ -182,9 +182,9 @@ class NominalMPC:
     def solve(
         self,
         x0: np.ndarray,
-        x_goal: Optional[np.ndarray] = None,
-        x_ref: Optional[np.ndarray] = None,
-        u_ref: Optional[np.ndarray] = None,
+        x_goal: FloatArray | None = None,
+        x_ref: FloatArray | None = None,
+        u_ref: FloatArray | None = None,
     ) -> tuple[np.ndarray, np.ndarray, bool]:
         """
         Solve the MPC optimization problem using multiple shooting in
@@ -272,10 +272,13 @@ class NominalMPC:
             #    - terminal cost: dx(N)^T Q_terminal dx(N)
             for k in range(self.horizon):
                 prog.AddQuadraticCost(self.Q, np.zeros(n_err), dx[k], is_convex=True)
-                prog.AddQuadraticCost(self.R, np.zeros(self.control_dim), du[k], is_convex=True)
+                prog.AddQuadraticCost(
+                    self.R, np.zeros(self.control_dim), du[k], is_convex=True
+                )
 
             prog.AddQuadraticCost(
-                self.Q_terminal, np.zeros(n_err), dx[self.horizon], is_convex=True)
+                self.Q_terminal, np.zeros(n_err), dx[self.horizon], is_convex=True
+            )
 
             # 7) Initial guesses in error coordinates
             initial_dx = np.zeros((self.horizon + 1, n_err))
@@ -340,14 +343,13 @@ class NominalMPC:
 
         return best_u_opt, best_x_opt, True
 
-
     def get_first_control(
         self,
-        x0: np.ndarray,
-        x_ref: Optional[np.ndarray] = None,
-        u_ref: Optional[np.ndarray] = None,
-        x_goal: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
+        x0: FloatArray,
+        x_ref: FloatArray | None = None,
+        u_ref: FloatArray | None = None,
+        x_goal: FloatArray | None = None,
+    ) -> FloatArray:
         """
         Solve MPC and return only the first control input (receding horizon).
 
@@ -364,9 +366,7 @@ class NominalMPC:
         Returns:
             First control input u[0].
         """
-        u_opt, _, success = self.solve(
-            x0, x_goal=x_goal, x_ref=x_ref, u_ref=u_ref
-        )
+        u_opt, _, success = self.solve(x0, x_goal=x_goal, x_ref=x_ref, u_ref=u_ref)
 
         if not success:
             print("Warning: MPC optimization failed, returning zero control")

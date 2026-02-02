@@ -7,7 +7,7 @@ name = "mpc-spacecraft"
 dynamic = ["version"]
 description = "Model Predictive Control for Spacecraft Attitude"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.12"
 dependencies = [
     "numpy>=1.21.0",
     "scipy>=1.7.0",
@@ -47,3 +47,15 @@ markers = [
     "unit: marks tests as unit tests",
     "integration: marks tests as integration tests",
 ]
+
+[tool.basedpyright]
+extraPaths = ["src"]
+reportMissingParameterType = "hint"
+reportConstantRedefinition = "warning"
+reportUnknownVariableType = "hint"
+reportUnknownMemberType = "hint"
+reportUnknownParameterType = "hint"
+reportUnknownArgumentType = "hint"
+reportAny = "none"
+reportMissingTypeStubs = "none"
+reportUnannotatedClassAttribute = "hint"

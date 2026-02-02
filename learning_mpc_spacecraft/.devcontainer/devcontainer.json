@@ -37,6 +37,5 @@
   "mounts": [],
   "runArgs": [
     "--network=host",
-    "--gpus=all"
   ]
 }

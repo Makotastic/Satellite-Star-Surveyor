@@ -21,6 +21,8 @@ wheels/
 *.egg
 *.npz
 *.pth
+*.pyi
+typings/
 
 # Virtual environments
 venv/
