@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mpc-spacecraft"
-dynamic = ["version"]
+version = "0.1.0"
 description = "Model Predictive Control for Spacecraft Attitude"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -39,6 +39,9 @@ dev = [
 [tool.hatch.build.targets.wheel.shared-data]
 "mpc_spacecraft.config" = "src/mpc_spacecraft/config"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/mpc_spacecraft"]
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "-ra -q"
@@ -50,6 +53,16 @@ markers = [
 
 [tool.basedpyright]
 extraPaths = ["src"]
+venvPath = "/opt"
+venv = "venv"
+stubPath = "typings"
+typeCheckingMode = "basic"
+pythonPlatform = "Linux"
+pythonVersion = "3.12"
+include = ["src", "tests", "experiments", "notebooks"]
+exclude = ["**/__pycache__", "**/.venv", "**/.mypy_cache", "**/.pytest_cache", "**/.ipynb_checkpoints"]
+ignore = ["**/*.ipynb"]
+reportMissingImports = "warning"
 reportMissingParameterType = "hint"
 reportConstantRedefinition = "warning"
 reportUnknownVariableType = "hint"
@@ -59,3 +72,10 @@ reportUnknownArgumentType = "hint"
 reportAny = "none"
 reportMissingTypeStubs = "none"
 reportUnannotatedClassAttribute = "hint"
+reportPrivateUsage = "none"
+reportGeneralTypeIssues = "error"
+reportCallIssue = "none"
+reportIncompatibleMethodOverride = "warning"
+reportUnusedImport = "warning"
+reportUnusedVariable = "warning"
+useLibraryCodeForTypes = true

@@ -77,10 +77,12 @@ class SpacecraftDynamics:
         return np.concatenate([qu.as_float_array(q_dot), omega_dot])
 
     def dynamics_error_jacobians(
-        self, state: FloatArray
+        self,
+        state: FloatArray,
+        input: FloatArray,
     ) -> tuple[FloatArray, FloatArray]:
         I3 = np.eye(3)
-        z3 = np.zeros((3))
+        z3 = np.zeros((3, 3))
 
         omega = state[IDX_OMEGA]
         skew_w = skew(omega)
@@ -179,6 +181,35 @@ class SpacecraftDynamics:
 
         return np.concatenate([delta_theta, delta_omega])
 
+    def state_error_batch(
+        self, states: FloatArray, states_ref: FloatArray
+    ) -> FloatArray:
+        """
+        Vectorized 6D error state [delta_theta, delta_omega] for batches.
+
+        Args:
+            states: Array of shape (N, 7)
+            states_ref: Array of shape (N, 7)
+
+        Returns:
+            Array of shape (N, 6)
+        """
+        q = qu.as_quat_array(states[:, IDX_QUAT])
+        q = q / np.abs(q)
+        omega = states[:, IDX_OMEGA]
+
+        q_ref = qu.as_quat_array(states_ref[:, IDX_QUAT])
+        q_ref = q_ref / np.abs(q_ref)
+        omega_ref = states_ref[:, IDX_OMEGA]
+
+        q_err = q_ref.conjugate() * q
+        q_err = q_err / np.abs(q_err)
+
+        delta_theta = 2.0 * qu.as_vector_part(q_err)
+        delta_omega = omega - omega_ref
+
+        return np.concatenate([delta_theta, delta_omega], axis=1)
+
     def state_from_error(
         self, delta_x: FloatArray, state_ref: FloatArray
     ) -> FloatArray:
@@ -205,6 +236,43 @@ class SpacecraftDynamics:
         state = np.empty(7)
         state[IDX_QUAT] = qu.as_float_array(q)
         state[IDX_OMEGA] = omega
+        return state
+
+    def state_from_error_batch(
+        self, delta_xs: FloatArray, states_ref: FloatArray
+    ) -> FloatArray:
+        """
+        Reconstruct full state [q, omega] from batched error states and references.
+
+        Args:
+            delta_xs: Array of shape (N, 6) with [delta_theta, delta_omega]
+            states_ref: Array of shape (N, 7)
+
+        Returns:
+            Array of shape (N, 7)
+        """
+        delta_theta = delta_xs[:, :3]
+        delta_omega = delta_xs[:, 3:]
+
+        q_ref = qu.as_quat_array(states_ref[:, IDX_QUAT]).normalized()
+        omega_ref = states_ref[:, IDX_OMEGA]
+
+        dq_float = np.concatenate(
+            [
+                np.ones((delta_xs.shape[0], 1), dtype=float),
+                0.5 * delta_theta,
+            ],
+            axis=1,
+        ).astype(float, copy=False)
+        dq = qu.as_quat_array(dq_float).normalized()
+
+        q = q_ref * dq
+        q = q / np.abs(q)
+        omega = omega_ref + delta_omega
+
+        state = np.empty((delta_xs.shape[0], 7), dtype=float)
+        state[:, IDX_QUAT] = qu.as_float_array(q)
+        state[:, IDX_OMEGA] = omega
         return state
 
     def discretize_linear_system(
@@ -235,5 +303,10 @@ class SpacecraftDynamics:
 
         Ad = exp_M[:n, :n]
         Bd = exp_M[:n, n:]
+
+        # Supposedly More Robust Solution
+        # I = np.eye(6)
+        # Ad = np.linalg.solve(I - 0.5 * self.dt * A, I + 0.5 * self.dt * A)
+        # Bd = np.linalg.solve(I - 0.5 * self.dt * A, self.dt * B)
 
         return Ad, Bd

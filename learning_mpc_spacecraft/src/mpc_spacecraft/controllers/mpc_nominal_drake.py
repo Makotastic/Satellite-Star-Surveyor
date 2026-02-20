@@ -7,6 +7,10 @@ from ..dynamics.rigid_body import SpacecraftDynamics
 from mpc_spacecraft.utilities.utils import FloatArray
 
 
+# @TODO: Add shift to dynamics equation to fix nominal trajectory and error cost trajectory mismatch
+#        Additionally add shift for each interval k, so that error frames line up as well
+
+
 class NominalMPC:
     """
     Model Predictive Control (MPC) controller with manual formulation.
@@ -43,11 +47,11 @@ class NominalMPC:
             max_sqp_iters: Number of sequential QP iterations per MPC solve
                            for the goal-only (non-tracking) case.
         """
-        self.horizon = horizon
+        self.horizon: int = horizon
         self.dynamics = dynamics
 
-        self.state_dim = 7
-        self.control_dim = 3
+        self.state_dim: int = 7
+        self.control_dim: int = 3
 
         self.Q = Q
         self.R = R
@@ -89,8 +93,8 @@ class NominalMPC:
         if x_goal is None and x_ref is None:
             raise ValueError("Need to provide either trajectory or terminal goal")
 
-        initial_x: np.ndarray
-        initial_u: np.ndarray
+        initial_x: FloatArray
+        initial_u: FloatArray
 
         # 1) Try to reuse previous MPC solution as a warm start
         if self.warm_start_u is not None and self.warm_start_x is not None:
@@ -206,7 +210,7 @@ class NominalMPC:
 
         n_err = 6
 
-        # 1) Cost reference (what we WANT the system to do)
+        # 1) Cost reference
         x_cost_traj, u_cost_traj = self.build_ref_trajectory(
             x0=x0, x_goal=x_goal, x_ref=x_ref, u_ref=u_ref
         )
@@ -216,8 +220,8 @@ class NominalMPC:
             x0=x0, x_goal=x_goal, x_ref=x_ref, u_ref=u_ref
         )
 
-        # For tracking problems (explicit x_ref), we usually keep cost reference fixed
-        # and just do one linear MPC solve. For goal-only problems, we can do SQP.
+        # For tracking problems (explicit x_ref) keep cost reference fixed
+        # just do one linear MPC solve. For goal-only problems do SQP.
         if x_ref is not None:
             max_iters = 1
         else:
@@ -228,23 +232,38 @@ class NominalMPC:
         best_u_opt = None
 
         # SQP / real-time iteration loop
-        for it in range(max_iters):
+        for _ in range(max_iters):
             prog = MathematicalProgram()
 
-            dx = prog.NewContinuousVariables(self.horizon + 1, n_err, "dx")
-            du = prog.NewContinuousVariables(self.horizon, self.control_dim, "du")
+            dx = prog.NewContinuousVariables(self.horizon + 1, n_err, "dx_nom")
+            du = prog.NewContinuousVariables(self.horizon, self.control_dim, "du_nom")
 
-            # 3) Initial condition in error coordinates (w.r.t cost reference)
-            dx0 = self.dynamics.state_error(x0, x_cost_traj[0])
-            prog.AddLinearEqualityConstraint(dx[0], dx0)
+            x_bias_k = self.dynamics.state_error_batch(x_nom_traj, x_cost_traj)
+            u_bias_k = u_nom_traj - u_cost_traj
 
-            # 4) Linearized error dynamics: dx_{k+1} = A_k dx_k + B_k du_k
-            #    Linearize around the NOMINAL trajectory (x_nom_traj, u_nom_traj)
+            #    Initial condition in error coordinates (w.r.t cost reference)
+            dx0_nom = self.dynamics.state_error(x0, x_nom_traj[0])
+            prog.AddLinearEqualityConstraint(dx[0], dx0_nom)
+
+            #    Linearized error dynamics: dx_{k+1} = A_k dx_k + B_k du_k
+            #    Convert cost cords to norm traj reference
             for k in range(self.horizon):
-                A, B = self.dynamics.linearize(x_nom_traj[k], u_nom_traj[k])
+                A, B = self.dynamics.dynamics_error_jacobians(
+                    x_nom_traj[k], u_nom_traj[k]
+                )
                 A_k, B_k = self.dynamics.discretize_linear_system(A, B)
+
+                x_nom_next_pred = self.dynamics.discrete_dynamics_rk4(
+                    x_nom_traj[k], u_nom_traj[k]
+                )
+                d_k = self.dynamics.state_error(x_nom_next_pred, x_nom_traj[k + 1])
+                # d_k = self.dynamics.state_error(x_nom_next_pred, x_nom_traj[k])
+
+                if not np.all(np.isfinite(d_k)):
+                    print("d_k not finite", k, d_k)
+
                 prog.AddLinearEqualityConstraint(
-                    dx[k + 1] - A_k @ dx[k] - B_k @ du[k],
+                    dx[k + 1] - A_k @ dx[k] - B_k @ du[k] - d_k,
                     np.zeros(n_err),
                 )
 
@@ -253,47 +272,48 @@ class NominalMPC:
             if (self.u_min is not None) or (self.u_max is not None):
                 for k in range(self.horizon):
                     if self.u_min is not None:
-                        lb = self.u_min - u_cost_traj[k]
+                        lb = self.u_min - u_nom_traj[k]
                     else:
                         lb = -np.inf * np.ones(self.control_dim)
 
                     if self.u_max is not None:
-                        ub = self.u_max - u_cost_traj[k]
+                        ub = self.u_max - u_nom_traj[k]
                     else:
                         ub = np.inf * np.ones(self.control_dim)
 
                     prog.AddBoundingBoxConstraint(lb, ub, du[k])
 
-            # (Optional) state constraints could be added here in the future
-            # using state_from_error(dx[k], x_cost_traj[k]) and linearization.
+            # OPTIONAL ADDITIONAL CONSTRAINTS (BOUNDARIES, SAFETY MARGIN)
 
-            # 6) Quadratic costs in error space
+            #    Quadratic costs in error space
             #    - stage costs: dx(k)^T Q dx(k) + du(k)^T R du(k)
             #    - terminal cost: dx(N)^T Q_terminal dx(N)
             for k in range(self.horizon):
-                prog.AddQuadraticCost(self.Q, np.zeros(n_err), dx[k], is_convex=True)
-                prog.AddQuadraticCost(
-                    self.R, np.zeros(self.control_dim), du[k], is_convex=True
-                )
+                x_err = dx[k] + x_bias_k[k]
+                u_err = du[k] + u_bias_k[k]
 
+                prog.AddQuadraticCost(x_err @ self.Q @ x_err, is_convex=True)
+                prog.AddQuadraticCost(u_err @ self.R @ u_err, is_convex=True)
+
+            x_term_err = dx[self.horizon] + x_bias_k[self.horizon]
             prog.AddQuadraticCost(
-                self.Q_terminal, np.zeros(n_err), dx[self.horizon], is_convex=True
+                x_term_err @ self.Q_terminal @ x_term_err, is_convex=True
             )
 
-            # 7) Initial guesses in error coordinates
+            #    Initial guesses in error coordinates
             initial_dx = np.zeros((self.horizon + 1, n_err))
             initial_du = np.zeros((self.horizon, self.control_dim))
 
             for k in range(self.horizon + 1):
-                initial_dx[k] = self.dynamics.state_error(x_nom_traj[k], x_cost_traj[k])
+                initial_dx[k] = np.zeros((n_err))
 
             for k in range(self.horizon):
-                initial_du[k] = u_nom_traj[k] - u_cost_traj[k]
+                initial_du[k] = np.zeros((self.control_dim))
 
             prog.SetInitialGuess(dx, initial_dx)
             prog.SetInitialGuess(du, initial_du)
 
-            # 8) Solve QP
+            #    Solve QP
             result = self.solver.Solve(prog)
 
             if not result.is_success():
@@ -307,22 +327,21 @@ class NominalMPC:
                     best_u_opt = None
                     break
 
-            # 9) Recover optimal error and map back to states / controls
+            #    Recover optimal error and map back to states / controls
             dx_sol = result.GetSolution(dx)
             du_sol = result.GetSolution(du)
 
             x_opt = np.zeros((self.horizon + 1, self.state_dim))
             for k in range(self.horizon + 1):
-                x_opt[k] = self.dynamics.state_from_error(dx_sol[k], x_cost_traj[k])
+                x_opt[k] = self.dynamics.state_from_error(dx_sol[k], x_nom_traj[k])
 
-            u_opt = du_sol + u_cost_traj
+            u_opt = du_sol + u_nom_traj
 
             best_success = True
             best_x_opt = x_opt
             best_u_opt = u_opt
 
-            # 10) Update the NOMINAL trajectory for the next SQP iteration
-            #     Cost reference (x_cost_traj, u_cost_traj) stays fixed.
+            #     Update the NOMINAL trajectory for the next SQP iteration
             x_nom_traj = x_opt.copy()
             u_nom_traj = u_opt.copy()
 

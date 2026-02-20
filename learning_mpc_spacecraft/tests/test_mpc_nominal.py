@@ -1,23 +1,25 @@
 import pytest
 import numpy as np
-import quaternion
+import quaternion as qu
 
-from src.mpc_spacecraft.controllers.mpc_nominal_drake import NominalMPC
-from src.mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
+from mpc_spacecraft.controllers.mpc_nominal_drake import NominalMPC
+from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 
 
 @pytest.fixture
 def inertia():
     """Diagonal inertia matrix."""
 
-    I_nominal = np.array([
-    [90.0,  -5.0,   3.0],
-    [-5.0, 110.0,  -4.0],
-    [ 3.0,  -4.0, 100.0],
-    ])
+    I_nominal = np.array(
+        [
+            [90.0, -5.0, 3.0],
+            [-5.0, 110.0, -4.0],
+            [3.0, -4.0, 100.0],
+        ]
+    )
 
     return I_nominal
-    #return np.diag([100.0, 100.0, 100.0])
+    # return np.diag([100.0, 100.0, 100.0])
 
 
 @pytest.fixture
@@ -41,8 +43,8 @@ def ref_state():
 @pytest.fixture
 def goal_state():
     """Goal state: rotated quaternion, zero omega."""
-    q_goal = np.quaternion(0.707, 0.0, 0.707, 0.0).normalized()  # ~90 deg around y
-    return np.concatenate([quaternion.as_float_array(q_goal), np.zeros(3)])
+    q_goal = qu.quaternion(0.707, 0.0, 0.707, 0.0).normalized()  # ~90 deg around y
+    return np.concatenate([qu.as_float_array(q_goal), np.zeros(3)])
 
 
 @pytest.fixture
@@ -85,10 +87,10 @@ def mpc(dynamics, horizon, Q, R):
 
 def quaternion_angle(q1: np.ndarray, q2: np.ndarray) -> float:
     """Compute the geodesic angle between two quaternions (in radians)."""
-    q1 = np.quaternion(*q1).normalized()
-    q2 = np.quaternion(*q2).normalized()
+    q1 = qu.quaternion(*q1).normalized()
+    q2 = qu.quaternion(*q2).normalized()
     # Use absolute value to avoid sign ambiguity (q and -q represent same rotation)
-    dot = abs(np.dot(quaternion.as_float_array(q1), quaternion.as_float_array(q2)))
+    dot = abs(np.dot(qu.as_float_array(q1), qu.as_float_array(q2)))
     dot = np.clip(dot, -1.0, 1.0)
     return 2.0 * np.arccos(dot)
 
@@ -171,8 +173,8 @@ def test_find_initial_guesses_goal_interpolates(mpc, ref_state, goal_state):
 
     # All intermediate quaternions should be normalized
     for k in range(mpc.horizon + 1):
-        qk = np.quaternion(*x_nom[k, :4])
-        norm_qk = np.linalg.norm(quaternion.as_float_array(qk))
+        qk = qu.quaternion(*x_nom[k, :4])
+        norm_qk = np.linalg.norm(qu.as_float_array(qk))
         np.testing.assert_allclose(norm_qk, 1.0, atol=1e-6)
 
     # Controls should be zero in the initial guess for goal-only
@@ -303,7 +305,9 @@ def test_control_bounds_respected(mpc, ref_state, goal_state):
 
 
 @pytest.mark.unit
-def test_sqp_multiple_iterations_still_succeeds(dynamics, horizon, Q, R, ref_state, goal_state):
+def test_sqp_multiple_iterations_still_succeeds(
+    dynamics, horizon, Q, R, ref_state, goal_state
+):
     """
     Construct an MPC with more SQP iterations and verify that solve still
     succeeds and returns consistent shapes.
@@ -334,6 +338,7 @@ def test_get_first_control_wrapper_goal(mpc, ref_state, goal_state):
     u0 = mpc.get_first_control(x0=ref_state, x_goal=goal_state)
     assert u0.shape == (mpc.control_dim,)
 
+
 @pytest.mark.integration
 def test_mpc_large_angle_with_disturbance_converges(dynamics: SpacecraftDynamics, Q, R):
     """
@@ -352,11 +357,11 @@ def test_mpc_large_angle_with_disturbance_converges(dynamics: SpacecraftDynamics
     theta = np.deg2rad(0.0)
     axis = np.array([0.0, 1.0, 0.0])
     axis = axis / np.linalg.norm(axis)
-    q_goal = np.quaternion(
+    q_goal = qu.quaternion(
         np.cos(theta / 2.0),
         *(axis * np.sin(theta / 2.0)),
     ).normalized()
-    x_goal = np.concatenate([quaternion.as_float_array(q_goal), np.zeros(3)])
+    x_goal = np.concatenate([qu.as_float_array(q_goal), np.zeros(3)])
 
     # Disturbance torque (constant bias in body frame)
     disturbance = np.array([0.02, -0.015, 0.01])
@@ -389,7 +394,9 @@ def test_mpc_large_angle_with_disturbance_converges(dynamics: SpacecraftDynamics
 
         # Apply control to true nonlinear system with disturbance
         x = dynamics.discrete_dynamics_rk4(x, u0, disturbance=disturbance)
-        print(f"{np.around(x, decimals=2)} time: {i//10}, error:{np.rad2deg(quaternion_angle(x[:4], x_goal[:4]))}")
+        print(
+            f"{np.around(x, decimals=2)} time: {i // 10}, error:{np.rad2deg(quaternion_angle(x[:4], x_goal[:4]))}"
+        )
 
     # Final orientation should be significantly closer to the goal
     final_angle_error = quaternion_angle(x[:4], x_goal[:4])
