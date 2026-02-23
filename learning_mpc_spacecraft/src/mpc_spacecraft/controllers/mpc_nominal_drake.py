@@ -4,11 +4,7 @@ import numpy as np
 import quaternion as qu
 from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
 from ..dynamics.rigid_body import SpacecraftDynamics
-from mpc_spacecraft.utilities.utils import FloatArray
-
-
-# @TODO: Add shift to dynamics equation to fix nominal trajectory and error cost trajectory mismatch
-#        Additionally add shift for each interval k, so that error frames line up as well
+from mpc_spacecraft.utilities.utils import FloatArray, RotErrState
 
 
 class NominalMPC:
@@ -241,33 +237,23 @@ class NominalMPC:
             x_bias_k = self.dynamics.state_error_batch(x_nom_traj, x_cost_traj)
             u_bias_k = u_nom_traj - u_cost_traj
 
-            #    Initial condition in error coordinates (w.r.t cost reference)
+            #    Initial condition in error coordinates (w.r.t nom reference)
             dx0_nom = self.dynamics.state_error(x0, x_nom_traj[0])
             prog.AddLinearEqualityConstraint(dx[0], dx0_nom)
 
             #    Linearized error dynamics: dx_{k+1} = A_k dx_k + B_k du_k
             #    Convert cost cords to norm traj reference
             for k in range(self.horizon):
-                A, B = self.dynamics.dynamics_error_jacobians(
-                    x_nom_traj[k], u_nom_traj[k]
+                A_k, B_k, c_k = self.dynamics.discrete_mpc_constraint(
+                    x_nom_traj[k], x_nom_traj[k + 1], u_nom_traj[k]
                 )
-                A_k, B_k = self.dynamics.discretize_linear_system(A, B)
-
-                x_nom_next_pred = self.dynamics.discrete_dynamics_rk4(
-                    x_nom_traj[k], u_nom_traj[k]
-                )
-                d_k = self.dynamics.state_error(x_nom_next_pred, x_nom_traj[k + 1])
-                # d_k = self.dynamics.state_error(x_nom_next_pred, x_nom_traj[k])
-
-                if not np.all(np.isfinite(d_k)):
-                    print("d_k not finite", k, d_k)
 
                 prog.AddLinearEqualityConstraint(
-                    dx[k + 1] - A_k @ dx[k] - B_k @ du[k] - d_k,
+                    dx[k + 1] - A_k @ dx[k] - B_k @ du[k] - c_k,
                     np.zeros(n_err),
                 )
 
-            # 5) Control constraints (on absolute u = u_cost_traj + du)
+            # 5) Control constraints (on absolute u = u_norm_traj + du)
             #    We express bounds in terms of error input du.
             if (self.u_min is not None) or (self.u_max is not None):
                 for k in range(self.horizon):

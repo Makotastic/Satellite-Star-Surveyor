@@ -13,7 +13,6 @@ IDX_THETA = slice(6, 9)
 IDX_BG = slice(9, 12)
 IDX_BA = slice(12, 15)
 
-
 I3 = np.eye(3)
 z3 = np.zeros((3, 3))
 

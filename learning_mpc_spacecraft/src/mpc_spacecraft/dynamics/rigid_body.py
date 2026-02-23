@@ -6,11 +6,24 @@ import numpy as np
 import quaternion as qu
 from scipy.linalg import expm
 
-from mpc_spacecraft.utilities.utils import FloatArray, Quat, skew
-
+from mpc_spacecraft.utilities.utils import (
+    FloatArray,
+    Quat,
+    skew,
+    RotErrState,
+    RotState,
+    I3,
+    z3,
+    jacob_r_lie,
+    jacob_r_lie_inv,
+    expm_so3,
+    logm_so3,
+)
 
 IDX_QUAT = slice(0, 4)
 IDX_OMEGA = slice(4, 7)
+
+# @TODO: Fix quaternion Integrator. RK4 does not natively work well with RK4, Use Lie algebra methods
 
 
 class SpacecraftDynamics:
@@ -39,10 +52,10 @@ class SpacecraftDynamics:
 
     def continuous_dynamics(
         self,
-        state: FloatArray,
+        state: RotState,
         control: FloatArray,
         disturbance: FloatArray | None = None,
-    ) -> FloatArray:
+    ) -> RotState:
         """
         Compute continuous-time dynamics: dx/dt = f(x, u).
 
@@ -76,13 +89,11 @@ class SpacecraftDynamics:
 
         return np.concatenate([qu.as_float_array(q_dot), omega_dot])
 
-    def dynamics_error_jacobians(
+    def dynamics_error_jacobian(
         self,
-        state: FloatArray,
+        state: RotState,
         input: FloatArray,
     ) -> tuple[FloatArray, FloatArray]:
-        I3 = np.eye(3)
-        z3 = np.zeros((3, 3))
 
         omega = state[IDX_OMEGA]
         skew_w = skew(omega)
@@ -96,12 +107,76 @@ class SpacecraftDynamics:
 
         return A, B
 
+    def discrete_mpc_constraint(
+        self,
+        x_nom_k: RotState,
+        x_nom_kp1: RotState,
+        u_nom_k: FloatArray,
+    ) -> tuple[FloatArray, FloatArray, FloatArray]:
+
+        omega = x_nom_k[IDX_OMEGA]
+        skew_w = skew(omega)
+        skew_jw = skew(self.inertia_inv @ omega)
+
+        B_omega_c = self.inertia_inv @ (skew_jw - skew_w @ self.inertia)
+        D_omega_c = np.block([self.inertia_inv])
+
+        B_omega, D_omega = self.discretize_linear_system(B_omega_c, D_omega_c)
+
+        x_pred_kp1 = self.discrete_dynamics_rk4(x_nom_k, u_nom_k)
+
+        c_omega = x_pred_kp1[IDX_OMEGA] - x_nom_kp1[IDX_OMEGA]
+
+        A_phi, B_phi, c_phi = self.discrete_phi_lie_shifting_constraint(
+            x_nom_k, x_nom_kp1
+        )
+
+        A_k = np.block([[A_phi, B_phi], [z3, B_omega]])
+
+        B_k = np.block([[z3], [D_omega]])
+
+        c_k = np.hstack((c_phi, c_omega))
+
+        return A_k, B_k, c_k
+
+    def discrete_phi_lie_shifting_constraint(
+        self,
+        x_nom_k: RotState,
+        x_nom_kp1: RotState,
+    ) -> tuple[FloatArray, FloatArray, FloatArray]:
+        """
+        Computes the correctly centered linearized dynamic
+        constraint for angle phi (error) from k to k + 1
+        d_phi_k+1 = A @ d_phi_k + B @ d_omega_k + s_k
+        """
+
+        q_nom_k = qu.quaternion(*x_nom_k[IDX_QUAT])
+        q_nom_kp1 = qu.quaternion(*x_nom_kp1[IDX_QUAT])
+        omega_nom_k = x_nom_k[IDX_OMEGA]
+        omega_nom_k_angle = omega_nom_k * self.dt
+
+        R_nom_k = qu.as_rotation_matrix(q_nom_k)
+        R_nom_kp1 = qu.as_rotation_matrix(q_nom_kp1)
+        d_R_centers = R_nom_kp1.T @ R_nom_k
+
+        R_w_nom_k = expm_so3(omega_nom_k_angle)
+
+        s_k = logm_so3(d_R_centers @ R_w_nom_k)
+
+        j_w_k = jacob_r_lie(omega_nom_k_angle)
+        j_m1_s = jacob_r_lie_inv(s_k)
+
+        A_phi = j_m1_s @ R_w_nom_k.T
+        B_omega = j_m1_s @ j_w_k * self.dt
+
+        return A_phi, B_omega, s_k
+
     def discrete_dynamics_rk4(
         self,
-        state: FloatArray,
+        state: RotState,
         control: FloatArray,
         disturbance: FloatArray | None = None,
-    ) -> FloatArray:
+    ) -> RotState:
         """
         Compute discrete-time dynamics using RK4 integration.
 
