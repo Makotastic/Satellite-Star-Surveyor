@@ -4,7 +4,7 @@ import numpy as np
 import quaternion as qu
 from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
 from ..dynamics.rigid_body import SpacecraftDynamics
-from mpc_spacecraft.utilities.utils import FloatArray, RotErrState
+from mpc_spacecraft.utilities.utils import FloatArray, RotState
 
 
 class NominalMPC:
@@ -24,8 +24,8 @@ class NominalMPC:
         Q_terminal: FloatArray | None = None,
         u_min: FloatArray | None = None,
         u_max: FloatArray | None = None,
-        x_min: FloatArray | None = None,
-        x_max: FloatArray | None = None,
+        x_min: RotState | None = None,
+        x_max: RotState | None = None,
         max_sqp_iters: int = 2,
     ):
         """
@@ -70,11 +70,11 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     def find_initial_guesses(
         self,
-        x0: FloatArray,
-        x_goal: FloatArray | None = None,
-        x_ref: FloatArray | None = None,
+        x0: RotState,
+        x_goal: RotState | None = None,
+        x_ref: RotState | None = None,
         u_ref: FloatArray | None = None,
-    ) -> tuple[FloatArray, FloatArray]:
+    ) -> tuple[RotState, FloatArray]:
         """
         Build an initial *nominal* guess for (state, control) along the horizon.
 
@@ -89,7 +89,7 @@ class NominalMPC:
         if x_goal is None and x_ref is None:
             raise ValueError("Need to provide either trajectory or terminal goal")
 
-        initial_x: FloatArray
+        initial_x: RotState
         initial_u: FloatArray
 
         # 1) Try to reuse previous MPC solution as a warm start
@@ -139,11 +139,11 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     def build_ref_trajectory(
         self,
-        x0: FloatArray,
-        x_goal: FloatArray | None = None,
-        x_ref: FloatArray | None = None,
+        x0: RotState,
+        x_goal: RotState | None = None,
+        x_ref: RotState | None = None,
         u_ref: FloatArray | None = None,
-    ) -> tuple[FloatArray, FloatArray]:
+    ) -> tuple[RotState, FloatArray]:
         """
         Build the *cost reference* trajectory (x_cost_traj, u_cost_traj).
 
@@ -181,11 +181,11 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     def solve(
         self,
-        x0: np.ndarray,
-        x_goal: FloatArray | None = None,
-        x_ref: FloatArray | None = None,
+        x0: RotState,
+        x_goal: RotState | None = None,
+        x_ref: RotState | None = None,
         u_ref: FloatArray | None = None,
-    ) -> tuple[np.ndarray, np.ndarray, bool]:
+    ) -> tuple[RotState, FloatArray, bool]:
         """
         Solve the MPC optimization problem using multiple shooting in
         error coordinates, with optional SQP / real-time iterations.
@@ -350,10 +350,10 @@ class NominalMPC:
 
     def get_first_control(
         self,
-        x0: FloatArray,
-        x_ref: FloatArray | None = None,
+        x0: RotState,
+        x_ref: RotState | None = None,
         u_ref: FloatArray | None = None,
-        x_goal: FloatArray | None = None,
+        x_goal: RotState | None = None,
     ) -> FloatArray:
         """
         Solve MPC and return only the first control input (receding horizon).

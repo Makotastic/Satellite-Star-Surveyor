@@ -241,7 +241,7 @@ class SpacecraftDynamics:
         delta_theta = 2.0 * qu.as_vector_part(q_err)
         return delta_theta
 
-    def state_error(self, state: FloatArray, state_ref: FloatArray) -> FloatArray:
+    def state_error(self, state: RotState, state_ref: RotState) -> RotErrState:
         """
         Map full state and reference state to 6D error state [delta_theta, delta_omega].
         """
@@ -256,9 +256,7 @@ class SpacecraftDynamics:
 
         return np.concatenate([delta_theta, delta_omega])
 
-    def state_error_batch(
-        self, states: FloatArray, states_ref: FloatArray
-    ) -> FloatArray:
+    def state_error_batch(self, states: RotState, states_ref: RotState) -> RotErrState:
         """
         Vectorized 6D error state [delta_theta, delta_omega] for batches.
 
@@ -285,9 +283,7 @@ class SpacecraftDynamics:
 
         return np.concatenate([delta_theta, delta_omega], axis=1)
 
-    def state_from_error(
-        self, delta_x: FloatArray, state_ref: FloatArray
-    ) -> FloatArray:
+    def state_from_error(self, delta_x: RotErrState, state_ref: RotState) -> RotState:
         """
         Reconstruct full state [q, omega] from error state [delta_theta, delta_omega]
         and reference state.
@@ -314,8 +310,8 @@ class SpacecraftDynamics:
         return state
 
     def state_from_error_batch(
-        self, delta_xs: FloatArray, states_ref: FloatArray
-    ) -> FloatArray:
+        self, delta_xs: RotErrState, states_ref: RotState
+    ) -> RotState:
         """
         Reconstruct full state [q, omega] from batched error states and references.
 
@@ -376,8 +372,8 @@ class SpacecraftDynamics:
         # Matrix exponential
         exp_M = expm(M)
 
-        Ad = exp_M[:n, :n]
-        Bd = exp_M[:n, n:]
+        Ad = cast(FloatArray, exp_M[:n, :n])
+        Bd = cast(FloatArray, exp_M[:n, n:])
 
         # Supposedly More Robust Solution
         # I = np.eye(6)

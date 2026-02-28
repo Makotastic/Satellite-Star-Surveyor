@@ -7,9 +7,7 @@ from numpy.typing import NDArray
 # A type alias for a float64 vector with exactly 3 elements.
 # Note: NumPy typing cannot fully encode shape constraints at runtime.
 Vec3: TypeAlias = NDArray[np.float64]
-
 FloatArray: TypeAlias = NDArray[np.float64]
-
 RotErrState: TypeAlias = FloatArray
 RotState: TypeAlias = FloatArray
 
