@@ -3,7 +3,7 @@ import numpy as np
 import quaternion as qu
 
 from mpc_spacecraft.controllers.mpc_nominal_drake import NominalMPC
-from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
+from mpc_spacecraft.dynamics.rigid_body_rotation import SpacecraftDynamics
 
 
 @pytest.fixture

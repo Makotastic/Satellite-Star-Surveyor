@@ -3,7 +3,7 @@
 import numpy as np
 import quaternion as qu
 from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
-from ..dynamics.rigid_body import SpacecraftDynamics
+from ..dynamics.rigid_body_rotation import SpacecraftDynamics
 from mpc_spacecraft.utilities.utils import FloatArray, RotState
 
 

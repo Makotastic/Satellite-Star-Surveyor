@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import quaternion as qu
 from src.mpc_spacecraft.controllers.lqr import LQRController
-from src.mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
+from mpc_spacecraft.dynamics.rigid_body_rotation import SpacecraftDynamics
 
 
 @pytest.fixture

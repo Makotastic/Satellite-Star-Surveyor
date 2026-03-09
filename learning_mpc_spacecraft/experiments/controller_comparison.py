@@ -8,7 +8,7 @@ import quaternion
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-from src.mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
+from mpc_spacecraft.dynamics.rigid_body_rotation import SpacecraftDynamics
 from src.mpc_spacecraft.dynamics.disturbances import DisturbanceModel
 from src.mpc_spacecraft.learning.residual_model import ResidualDynamicsModel
 from src.mpc_spacecraft.learning.dataset import DynamicsDataset
