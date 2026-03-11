@@ -33,3 +33,4 @@ notebook>=6.4.0
 # Additional utilities
 tqdm>=4.60.0
 pyyaml>=6.0
+astropy>=6.0.0

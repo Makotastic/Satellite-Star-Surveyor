@@ -3,6 +3,7 @@ from mpc_spacecraft.utilities.utils import (
     Vec3,
     unit,
     R_EARTH_M,
+    BODY_FORWARD_VEC3,
     )
 from typing import TypeAlias
 from enum import IntEnum
@@ -37,16 +38,17 @@ class StarPlanner:
         observing_threshold_deg: float = 0.01,
         observing_max_angular_rate: float = 0.01,
     ):
+        validate_targets_dataframe(targets)
         
-        self.targets: pd.DataFrame = convert_ECI_pos_to_unit_vec(targets)
-        self.targets["obs_time"] = 0
+        self._targets: pd.DataFrame = convert_ECI_pos_to_unit_vec(targets)
+        self._targets["obs_time"] = 0
 
-        self.sun_keepout = np.deg2rad(sun_keepout_deg)
-        self.earth_margin = np.deg2rad(earth_margin_deg)
-        self.stabilize_threshold = np.deg2rad(stabilizing_threshold_deg)
-        self.observe_threshold = np.deg2rad(observing_threshold_deg)
-        self.observe_rate_threshold = np.deg2rad(observing_max_angular_rate)
-        self.current_target_idx = None
+        self._sun_keepout = np.deg2rad(sun_keepout_deg)
+        self._earth_margin = np.deg2rad(earth_margin_deg)
+        self._stabilize_threshold = np.deg2rad(stabilizing_threshold_deg)
+        self._observe_threshold = np.deg2rad(observing_threshold_deg)
+        self._observe_rate_threshold = np.deg2rad(observing_max_angular_rate)
+        self._current_target_idx = None
         self.mode = PlanModes.NO_TARGET
 
 
@@ -58,7 +60,7 @@ class StarPlanner:
         body_dir_I: Vec3,
     ) -> tuple[Vec3 | None, pd.DataFrame]:
         
-        star_vecs = self.targets[["x", "y", "z"]].to_numpy()
+        star_vecs = self._targets[["x", "y", "z"]].to_numpy()
 
         earth_angle, sun_angle, dist_angle = compute_earth_sun_body_angles(
                                                 star_vecs,
@@ -73,7 +75,7 @@ class StarPlanner:
                                                 body_state
                                                 )
 
-        costs = self.targets.copy()
+        costs = self._targets.copy()
         costs["earth_angle"] = earth_angle
         costs["sun_angle"]   = sun_angle
         costs["dist_angle"]  = dist_angle
@@ -90,7 +92,7 @@ class StarPlanner:
         feasible_unfinished["score"] = feasible_unfinished["dist_angle"]
 
         best_idx = feasible_unfinished["score"].idxmin()
-        self.current_target_idx = best_idx
+        self._current_target_idx = best_idx
 
         target_row = feasible_unfinished.loc[best_idx]
         target_dir_I = target_row[["x", "y", "z"]].to_numpy()
@@ -108,8 +110,8 @@ class StarPlanner:
         r = np.linalg.norm(pos_I)
         earth_occlusion_half_angle = np.arcsin(np.clip(R_EARTH_M / r, -1.0, 1.0))
 
-        earth_ok = earth_angle > (earth_occlusion_half_angle + self.earth_margin)
-        sun_ok   = sun_angle > self.sun_keepout
+        earth_ok = earth_angle > (earth_occlusion_half_angle + self._earth_margin)
+        sun_ok   = sun_angle > self._sun_keepout
         feasible = earth_ok & sun_ok
 
         return feasible, earth_ok, sun_ok
@@ -117,9 +119,9 @@ class StarPlanner:
     def tick(self, body_state: FloatArray, dt: float, sun_dir_I: Vec3) -> tuple[Vec3 | None, PlanModes, bool]:
 
         if self.mode == PlanModes.OBSERVING:
-            self.targets.loc[self.current_target_idx, "obs_time"] += dt
+            self._targets.loc[self._current_target_idx, "obs_time"] += dt
 
-        targets_complete = np.all(self.targets["req_obs_time"] > self.targets["obs_time"])
+        targets_complete = np.all(self._targets["req_obs_time"] > self._targets["obs_time"])
 
         earth_dir_I, body_dir_I = compute_earth_body_directions(body_state)
 
@@ -131,7 +133,7 @@ class StarPlanner:
                 self.mode = PlanModes.SLEWING
             return star_vec, self.mode, targets_complete
 
-        target = self.targets.loc[self.current_target_idx]
+        target = self._targets.loc[self._current_target_idx]
         star_vec = target[["x", "y", "z"]].to_numpy()
 
         earth_angle, sun_angle, dist_angle = compute_earth_sun_body_angles(
@@ -190,9 +192,8 @@ def compute_earth_body_directions(body_state: FloatArray) -> tuple[Vec3, Vec3]:
         pos_I = body_state[IDX_POS]
         earth_dir_I = unit(-pos_I)
 
-        body_forward = np.array([1.0, 0.0, 0.0])
         rot_quat = qu.quaternion(*body_state[IDX_THETA])
-        body_dir_I = qu.rotate_vectors(rot_quat, body_forward)
+        body_dir_I = qu.rotate_vectors(rot_quat, BODY_FORWARD_VEC3)
 
         return earth_dir_I, body_dir_I
 
@@ -204,3 +205,21 @@ def convert_ECI_pos_to_unit_vec(targets: pd.DataFrame) -> pd.DataFrame:
                                    z = np.sin(targets.Dec)).drop(columns=["Dec", "RA"])
 
     return unit_targets
+
+
+def validate_targets_dataframe(targets: pd.DataFrame) -> None:
+    if not isinstance(targets, pd.DataFrame):
+        raise ValueError("targets must be a pandas DataFrame")
+
+    required_columns = {"req_obs_time", "Dec", "RA"}
+    missing_columns = required_columns - set(targets.columns)
+    if missing_columns:
+        missing_sorted = sorted(missing_columns)
+        raise ValueError(f"targets is missing required columns: {missing_sorted}")
+
+    for col in sorted(required_columns):
+        if not pd.api.types.is_numeric_dtype(targets[col]):
+            raise ValueError(f"targets['{col}'] must be numeric")
+
+        if not np.isfinite(targets[col].to_numpy()).all():
+            raise ValueError(f"targets['{col}'] contains NaN or infinite values")

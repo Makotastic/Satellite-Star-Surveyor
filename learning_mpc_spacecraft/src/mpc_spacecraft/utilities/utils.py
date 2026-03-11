@@ -26,6 +26,8 @@ HOUR_TO_SEC = 3600.0
 I3 = np.eye(3)
 z3 = np.zeros((3, 3))
 
+BODY_FORWARD_VEC3 = np.array([1.0, 0.0, 0.0])
+
 R_EARTH_M = 6.378E6
 
 

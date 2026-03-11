@@ -3,7 +3,7 @@
 import numpy as np
 import quaternion as qu
 from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
-from ..dynamics.rigid_body_rotation import SpacecraftDynamics
+from ..dynamics.rigid_body_rotation import RotationalDynamics
 from mpc_spacecraft.utilities.utils import FloatArray, RotState
 
 
@@ -18,7 +18,7 @@ class NominalMPC:
     def __init__(
         self,
         horizon: int,
-        dynamics: SpacecraftDynamics,
+        dynamics: RotationalDynamics,
         Q: FloatArray,
         R: FloatArray,
         Q_terminal: FloatArray | None = None,
@@ -318,6 +318,9 @@ class NominalMPC:
             du_sol = result.GetSolution(du)
 
             x_opt = np.zeros((self.horizon + 1, self.state_dim))
+
+            ### TODO Use Vectorized Error Conversion
+
             for k in range(self.horizon + 1):
                 x_opt[k] = self.dynamics.state_from_error(dx_sol[k], x_nom_traj[k])
 
