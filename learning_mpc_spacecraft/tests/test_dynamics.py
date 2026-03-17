@@ -3,6 +3,7 @@ import numpy as np
 import quaternion
 from src.mpc_spacecraft.controllers.error_state_mapping import ErrorStateMappingService
 from src.mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
+from mpc_spacecraft.dynamics.rigid_body_rotation import SpacecraftDynamics
 
 
 @pytest.fixture

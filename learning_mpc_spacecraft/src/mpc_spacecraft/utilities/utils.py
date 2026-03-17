@@ -10,6 +10,7 @@ Vec3: TypeAlias = NDArray[np.float64]
 FloatArray: TypeAlias = NDArray[np.float64]
 RotErrState: TypeAlias = FloatArray
 RotState: TypeAlias = FloatArray
+TransState: TypeAlias = FloatArray
 
 Quat: TypeAlias = quaternion.quaternion  # type: ignore[attr-defined]
 
@@ -55,6 +56,10 @@ HOUR_TO_SEC = 3600.0
 I3 = np.eye(3)
 z3 = np.zeros((3, 3))
 
+BODY_FORWARD_VEC3 = np.array([1.0, 0.0, 0.0])
+
+R_EARTH_M = 6.378E6
+
 
 def as_vec3(v: Sequence[float] | FloatArray) -> Vec3:
     """Return a validated 3-element float64 vector.
@@ -70,6 +75,11 @@ def as_vec3(v: Sequence[float] | FloatArray) -> Vec3:
         raise ValueError("Vector contains NaN or infinite values.")
     return arr
 
+def unit(v: FloatArray, axis=-1):
+    n = np.linalg.norm(v, axis=axis)
+    if np.any(n == 0):
+        raise ValueError("Norm is zero")
+    return v / n
 
 def skew(v: Sequence[float] | FloatArray) -> FloatArray:
     """Return the 3x3 skew-symmetric matrix of a 3D vector."""

@@ -15,7 +15,7 @@ import numpy as np
 import quaternion
 import torch
 
-from ..dynamics.rigid_body import SpacecraftDynamics
+from ..dynamics.rigid_body_rotation import SpacecraftDynamics
 from ..learning.residual_model import ResidualDynamicsModel
 from ..learning.dataset import DynamicsDataset
 from .error_state_mapping import ErrorStateMappingService

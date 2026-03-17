@@ -5,6 +5,7 @@ from typing import Any, cast
 import numpy as np
 import quaternion as qu
 from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
+<<<<<<< HEAD
 
 from .prediction_adapters import SpacecraftDynamicsPredictionAdapter
 from .prediction_model import MPCPredictionModel
@@ -13,6 +14,10 @@ from mpc_spacecraft.utilities.utils import FloatArray, RotState, ROT_STATE_SLICE
 
 IDX_STATE_QUAT = ROT_STATE_SLICES.quat
 IDX_STATE_OMEGA = ROT_STATE_SLICES.omega
+=======
+from ..dynamics.rigid_body_rotation import RotationalDynamics
+from mpc_spacecraft.utilities.utils import FloatArray, RotState
+>>>>>>> baf63a3c9d78d1502e87df6b5a0e19fbc966138e
 
 
 class NominalMPC:
@@ -26,7 +31,7 @@ class NominalMPC:
     def __init__(
         self,
         horizon: int,
-        dynamics: SpacecraftDynamics,
+        dynamics: RotationalDynamics,
         Q: FloatArray,
         R: FloatArray,
         prediction_model: MPCPredictionModel | None = None,
@@ -340,6 +345,9 @@ class NominalMPC:
             du_sol = result.GetSolution(du)
 
             x_opt = np.zeros((self.horizon + 1, self.state_dim))
+
+            ### TODO Use Vectorized Error Conversion
+
             for k in range(self.horizon + 1):
                 x_opt[k] = self.prediction_model.state_from_error(
                     dx_sol[k], x_nom_traj[k]
