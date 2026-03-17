@@ -5,19 +5,12 @@ from typing import Any, cast
 import numpy as np
 import quaternion as qu
 from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
-<<<<<<< HEAD
 
-from .prediction_adapters import SpacecraftDynamicsPredictionAdapter
-from .prediction_model import MPCPredictionModel
-from ..dynamics.rigid_body import SpacecraftDynamics
+from .error_dynamics_providers import ErrorDynamicsProvider
 from mpc_spacecraft.utilities.utils import FloatArray, RotState, ROT_STATE_SLICES
 
 IDX_STATE_QUAT = ROT_STATE_SLICES.quat
 IDX_STATE_OMEGA = ROT_STATE_SLICES.omega
-=======
-from ..dynamics.rigid_body_rotation import RotationalDynamics
-from mpc_spacecraft.utilities.utils import FloatArray, RotState
->>>>>>> baf63a3c9d78d1502e87df6b5a0e19fbc966138e
 
 
 class NominalMPC:
@@ -31,10 +24,9 @@ class NominalMPC:
     def __init__(
         self,
         horizon: int,
-        dynamics: RotationalDynamics,
         Q: FloatArray,
         R: FloatArray,
-        prediction_model: MPCPredictionModel | None = None,
+        error_dynamics_provider: ErrorDynamicsProvider,
         Q_terminal: FloatArray | None = None,
         u_min: FloatArray | None = None,
         u_max: FloatArray | None = None,
@@ -58,12 +50,7 @@ class NominalMPC:
                            for the goal-only (non-tracking) case.
         """
         self.horizon: int = horizon
-        # self.dynamics = dynamics
-        self.prediction_model = (
-            prediction_model
-            if prediction_model is not None
-            else SpacecraftDynamicsPredictionAdapter(dynamics)
-        )
+        self.err_dynamics_provider = error_dynamics_provider
 
         self.state_dim: int = 7
         self.control_dim: int = 3
@@ -259,17 +246,19 @@ class NominalMPC:
             dx = prog.NewContinuousVariables(self.horizon + 1, n_err, "dx_nom")
             du = prog.NewContinuousVariables(self.horizon, self.control_dim, "du_nom")
 
-            x_bias_k = self.prediction_model.state_error_batch(x_nom_traj, x_cost_traj)
+            x_bias_k = self.err_dynamics_provider.state_error_batch(
+                x_nom_traj, x_cost_traj
+            )
             u_bias_k = u_nom_traj - u_cost_traj
 
             #    Initial condition in error coordinates (w.r.t nom reference)
-            dx0_nom = self.prediction_model.state_error(x0, x_nom_traj[0])
+            dx0_nom = self.err_dynamics_provider.state_error(x0, x_nom_traj[0])
             prog.AddLinearEqualityConstraint(dx[0], cast(Any, dx0_nom))
 
             #    Linearized error dynamics: dx_{k+1} = A_k dx_k + B_k du_k
             #    Convert cost cords to norm traj reference
             for k in range(self.horizon):
-                step = self.prediction_model.affine_error_dynamics_step(
+                step = self.err_dynamics_provider.affine_error_dynamics_step(
                     x_nom_k=x_nom_traj[k],
                     x_nom_kp1=x_nom_traj[k + 1],
                     u_nom_k=u_nom_traj[k],
@@ -349,7 +338,7 @@ class NominalMPC:
             ### TODO Use Vectorized Error Conversion
 
             for k in range(self.horizon + 1):
-                x_opt[k] = self.prediction_model.state_from_error(
+                x_opt[k] = self.err_dynamics_provider.state_from_error(
                     dx_sol[k], x_nom_traj[k]
                 )
 

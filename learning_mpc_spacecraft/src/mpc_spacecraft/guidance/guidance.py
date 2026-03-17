@@ -8,17 +8,18 @@ from mpc_spacecraft.utilities.utils import (
     Vec3,
     unit,
     BODY_FORWARD_VEC3,
-    Quat
-    )
+    Quat,
+    FULL_STATE_SLICES,
+)
 
 import numpy as np
 import quaternion as qu
 
-IDX_TRANS_STATE = slice(0, 6)
-IDX_ROT_STATE = slice(6, 13)
+IDX_TRANS_STATE = FULL_STATE_SLICES.translation
+IDX_ROT_STATE = FULL_STATE_SLICES.rotation
 
-class Guideance:
 
+class Guidance:
     def __init__(
         self,
         planner: StarPlanner,
@@ -43,7 +44,9 @@ class Guideance:
         if goal_vec is None or is_complete:
             goal_rot_state = curr_rot_state
         else:
-            goal_quat = compute_inertial_rot_quat(goal_vec, BODY_FORWARD_VEC3).as_float_array()
+            goal_quat = compute_inertial_rot_quat(
+                goal_vec, BODY_FORWARD_VEC3
+            ).as_float_array()
             goal_omega = np.zeros(3)
             goal_rot_state = np.concatenate((goal_quat, goal_omega))
 
@@ -62,11 +65,14 @@ def compute_inertial_rot_quat(goal_vec: Vec3, body_forward_vec: Vec3) -> Quat:
 
     # Anti-parallel: deterministic 180deg about a fixed orthogonal axis.
     if dot < -1.0 + 1e-8:
-        basis = np.array([1.0, 0.0, 0.0]) if abs(body_fwd_u[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        basis = (
+            np.array([1.0, 0.0, 0.0])
+            if abs(body_fwd_u[0]) < 0.9
+            else np.array([0.0, 1.0, 0.0])
+        )
         axis = unit(np.cross(body_fwd_u, basis))
         return qu.from_rotation_vector(axis * np.pi)
 
     axis = unit(np.cross(body_fwd_u, goal_u))
     theta = np.arccos(dot)
     return qu.from_rotation_vector(axis * theta)
-    

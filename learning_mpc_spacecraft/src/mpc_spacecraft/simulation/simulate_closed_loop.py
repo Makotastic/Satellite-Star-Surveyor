@@ -164,8 +164,8 @@ def simulate_closed_loop(
         logger.log_step(time, state, control, x_ref)
 
         # Propagate dynamics
-        if hasattr(dynamics, "discrete_dynamics_rk4"):
-            state = dynamics.discrete_dynamics_rk4(state, control, disturbance)
+        if hasattr(dynamics, "discrete_dynamics_rk4_rotation"):
+            state = dynamics.discrete_dynamics_rk4_rotation(state, control, disturbance)
         else:
             raise ValueError("Dynamics must have discrete_dynamics method")
 

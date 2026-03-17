@@ -3,9 +3,8 @@ import numpy as np
 import quaternion as qu
 
 from mpc_spacecraft.controllers.mpc_nominal_drake import NominalMPC
-from mpc_spacecraft.dynamics.rigid_body_rotation import SpacecraftDynamics
-from mpc_spacecraft.controllers.error_state_mapping import ErrorStateMappingService
 from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
+from mpc_spacecraft.controllers.error_state_mapping import ErrorStateMappingService
 
 
 @pytest.fixture
@@ -400,7 +399,7 @@ def test_mpc_large_angle_with_disturbance_converges(dynamics: SpacecraftDynamics
         u0 = mpc.get_first_control(x0=x, x_goal=x_goal)
 
         # Apply control to true nonlinear system with disturbance
-        x = dynamics.discrete_dynamics_rk4(x, u0, disturbance=disturbance)
+        x = dynamics.discrete_dynamics_rk4_rotation(x, u0, disturbance=disturbance)
         print(
             f"{np.around(x, decimals=2)} time: {i // 10}, error:{np.rad2deg(quaternion_angle(x[:4], x_goal[:4]))}"
         )

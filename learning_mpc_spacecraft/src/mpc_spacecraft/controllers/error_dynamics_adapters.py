@@ -7,10 +7,10 @@ from mpc_spacecraft.utilities.utils import FloatArray, RotErrState, RotState
 from ..dynamics.rigid_body import SpacecraftDynamics
 from ..dynamics.rigid_body_error_constraints import RigidBodyErrorConstraintBuilder
 from .error_state_mapping import ErrorStateMappingService
-from .prediction_model import AffineErrorDynamicsStep, MPCPredictionModel
+from .error_dynamics_providers import AffineErrorDynamicsStep, ErrorDynamicsProvider
 
 
-class SpacecraftDynamicsPredictionAdapter(MPCPredictionModel):
+class SpacecraftErrorDynamicsProvider(ErrorDynamicsProvider):
     """Adapter that exposes `SpacecraftDynamics` through `MPCPredictionModel`.
 
     This intentionally delegates to existing methods in
@@ -49,7 +49,7 @@ class SpacecraftDynamicsPredictionAdapter(MPCPredictionModel):
             x_nom_k=x_nom_k,
             x_nom_kp1=x_nom_kp1,
             u_nom_k=u_nom_k,
-            discrete_dynamics_step=self.dynamics.discrete_dynamics_rk4,
+            discrete_dynamics_step=self.dynamics.discrete_dynamics_rk4_rotation,
             discretize_linear_system=self.dynamics.discretize_linear_system,
         )
         return AffineErrorDynamicsStep(
@@ -59,7 +59,7 @@ class SpacecraftDynamicsPredictionAdapter(MPCPredictionModel):
         )
 
 
-class HybridSpacecraftPredictionAdapter(SpacecraftDynamicsPredictionAdapter):
+class HybridErrorDynamicsProvider(SpacecraftErrorDynamicsProvider):
     """Scaffolding adapter for hybrid/learned dynamics.
 
     Uses finite-difference linearization of the hybrid one-step map in
@@ -88,7 +88,7 @@ class HybridSpacecraftPredictionAdapter(SpacecraftDynamicsPredictionAdapter):
         def f_err(delta_x: FloatArray, delta_u: FloatArray) -> FloatArray:
             state = self.state_from_error(delta_x, x_nom_k)
             control = u_nom_k + delta_u
-            state_next = self.dynamics.discrete_dynamics_rk4(state, control)
+            state_next = self.dynamics.discrete_dynamics_rk4_rotation(state, control)
             return self.state_error(state_next, x_nom_kp1)
 
         c = f_err(dx0, du0)

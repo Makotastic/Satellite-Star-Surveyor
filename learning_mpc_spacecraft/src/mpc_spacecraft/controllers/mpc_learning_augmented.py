@@ -15,12 +15,12 @@ import numpy as np
 import quaternion
 import torch
 
-from ..dynamics.rigid_body_rotation import SpacecraftDynamics
+from ..dynamics.rigid_body import SpacecraftDynamics
 from ..learning.residual_model import ResidualDynamicsModel
 from ..learning.dataset import DynamicsDataset
 from .error_state_mapping import ErrorStateMappingService
 from .mpc_nominal_drake import NominalMPC
-from .prediction_adapters import HybridSpacecraftPredictionAdapter
+from .error_dynamics_adapters import HybridErrorDynamicsProvider
 
 
 class HybridSpacecraftDynamics(SpacecraftDynamics):
@@ -119,7 +119,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
     # ------------------------------------------------------------------
     # Hybrid discrete-time dynamics
     # ------------------------------------------------------------------
-    def discrete_dynamics_rk4(
+    def discrete_dynamics_rk4_rotation(
         self,
         state: np.ndarray,
         control: np.ndarray,
@@ -132,8 +132,8 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
 
         where x_nominal_next is the nominal RK4 step from SpacecraftDynamics.
         """
-        # 1) nominal step (super() uses continuous_dynamics + RK4)
-        x_nom_next = super().discrete_dynamics_rk4(state, control, disturbance)
+        # 1) nominal step (super() uses rotational continuous dynamics + RK4)
+        x_nom_next = super().discrete_dynamics_rk4_rotation(state, control, disturbance)
 
         # 2) residual prediction
         self.residual_model.eval()
@@ -153,7 +153,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
 
         return x_next
 
-    def discrete_dynamics_euler(
+    def discrete_dynamics_euler_rotation(
         self,
         state: np.ndarray,
         control: np.ndarray,
@@ -167,7 +167,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         consistent.
         """
         # 1) nominal Euler step
-        state_dot = self.continuous_dynamics(state, control, disturbance)
+        state_dot = self._continuous_dynamics_rotation(state, control, disturbance)
         x_nom_next = state + self.dt * state_dot
 
         # 2) residual prediction
@@ -227,7 +227,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
             control = control_ref + delta_u
 
             # One-step hybrid discrete dynamics
-            state_next = self.discrete_dynamics_rk4(state, control)
+            state_next = self.discrete_dynamics_rk4_rotation(state, control)
 
             # Error of next state w.r.t. same reference
             err_next = self.error_mapping.state_error(state_next, state_ref)
@@ -330,8 +330,7 @@ class LearningAugmentedMPC(NominalMPC):
         # Initialize the parent MPC with the hybrid dynamics.
         super().__init__(
             horizon=horizon,
-            dynamics=hybrid_dynamics,
-            prediction_model=HybridSpacecraftPredictionAdapter(hybrid_dynamics),
+            error_dynamics_provider=HybridErrorDynamicsProvider(hybrid_dynamics),
             Q=Q,
             R=R,
             Q_terminal=Q_terminal,

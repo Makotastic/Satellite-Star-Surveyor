@@ -2,8 +2,7 @@ import pytest
 import numpy as np
 import quaternion
 from src.mpc_spacecraft.controllers.error_state_mapping import ErrorStateMappingService
-from src.mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
-from mpc_spacecraft.dynamics.rigid_body_rotation import SpacecraftDynamics
+from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 
 
 @pytest.fixture
@@ -65,7 +64,9 @@ def test_quaternion_normalization(dynamics, ref_state, zero_control):
 
     # Test with non-zero control
     non_zero_control = np.array([1.0, 0.0, 0.0])
-    next_state_nonzero = dynamics.discrete_dynamics_rk4(state_unnorm, non_zero_control)
+    next_state_nonzero = dynamics.discrete_dynamics_rk4_rotation(
+        state_unnorm, non_zero_control
+    )
     q_next_nonzero = quaternion.quaternion(*next_state_nonzero[:4])
     assert np.isclose(q_next_nonzero.norm(), 1.0, atol=1e-10)
 
@@ -73,15 +74,15 @@ def test_quaternion_normalization(dynamics, ref_state, zero_control):
 @pytest.mark.unit
 def test_continuous_dynamics_equilibrium(dynamics, ref_state, zero_control):
     """Test continuous dynamics at equilibrium (should be zero)."""
-    state_dot = dynamics.continuous_dynamics(ref_state, zero_control)
+    state_dot = dynamics.continuous_dynamics_rotation(ref_state, zero_control)
     np.testing.assert_allclose(state_dot, np.zeros(7), atol=1e-10)
 
 
 @pytest.mark.unit
 def test_discrete_dynamics_consistency(dynamics, ref_state, zero_control):
     """Test RK4 vs Euler for small step at equilibrium."""
-    rk4_next = dynamics.discrete_dynamics_rk4(ref_state, zero_control)
-    euler_next = dynamics.discrete_dynamics_euler(ref_state, zero_control)
+    rk4_next = dynamics.discrete_dynamics_rk4_rotation(ref_state, zero_control)
+    euler_next = dynamics.discrete_dynamics_euler_rotation(ref_state, zero_control)
     np.testing.assert_allclose(rk4_next, euler_next, rtol=1e-6, atol=1e-8)
 
 
@@ -174,7 +175,9 @@ def test_simple_maneuver_free_motion(
     T = n_steps * dt
 
     for _ in range(n_steps):
-        next_state = dynamics.discrete_dynamics_rk4(current_state, zero_control)
+        next_state = dynamics.discrete_dynamics_rk4_rotation(
+            current_state, zero_control
+        )
         states.append(next_state)
         current_state = next_state
 
@@ -213,7 +216,9 @@ def test_error_coords_in_simulation(
     dt = dynamics.dt
 
     # Simulate one step
-    next_state = dynamics.discrete_dynamics_euler(small_error_state, zero_control)
+    next_state = dynamics.discrete_dynamics_euler_rotation(
+        small_error_state, zero_control
+    )
 
     delta_x_before = error_mapping.state_error(small_error_state, ref_state)
     delta_x_after = error_mapping.state_error(next_state, ref_state)
@@ -230,3 +235,24 @@ def test_error_coords_in_simulation(
 
     # Optional: sanity check that nothing exploded numerically
     assert np.linalg.norm(delta_x_after) < 1.0
+
+
+@pytest.mark.unit
+def test_set_inertia_updates_inverse(dynamics):
+    new_inertia = np.diag([2.0, 3.0, 4.0])
+    dynamics.set_inertia(new_inertia)
+    np.testing.assert_allclose(dynamics.inertia, new_inertia)
+    np.testing.assert_allclose(dynamics.inertia_inv, np.linalg.inv(new_inertia))
+
+
+@pytest.mark.unit
+def test_translation_branch_rk4_constant_acceleration(dynamics):
+    state = np.zeros(6)
+    accel = np.array([1.0, -2.0, 0.5])
+    next_state = dynamics.discrete_dynamics_rk4_translation(state, accel)
+
+    dt = dynamics.dt
+    expected = np.zeros(6)
+    expected[:3] = 0.5 * accel * dt * dt
+    expected[3:] = accel * dt
+    np.testing.assert_allclose(next_state, expected, atol=1e-12)

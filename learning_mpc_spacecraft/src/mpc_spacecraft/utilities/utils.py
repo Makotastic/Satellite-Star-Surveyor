@@ -47,6 +47,38 @@ ROT_ERROR_SLICES: Final[RotErrSlices] = RotErrSlices(
 )
 
 
+class TransStateSlice(NamedTuple):
+    """Constant index slices for the 6D `TransState` ndarray layout.
+
+    Layout: `[x, y, z, v_x, v_y, v_z]`.
+    """
+
+    position: slice
+    velocity: slice
+
+
+TRANS_STATE_SLICES: Final[TransStateSlice] = TransStateSlice(
+    position=slice(0, 3),
+    velocity=slice(3, 6),
+)
+
+
+class FullStateSlices(NamedTuple):
+    """Constant index slices for the 7D `RotState` ndarray layout.
+
+    Layout: `[q_w, q_x, q_y, q_z, omega_x, omega_y, omega_z]`.
+    """
+
+    translation: slice
+    rotation: slice
+
+
+FULL_STATE_SLICES: Final[FullStateSlices] = FullStateSlices(
+    translation=slice(0, 6),
+    rotation=slice(6, 13),
+)
+
+
 # Unit conversions
 ARCSEC_TO_RAD = np.pi / 648000.0
 DEG_TO_RAD = np.pi / 180.0
@@ -58,7 +90,7 @@ z3 = np.zeros((3, 3))
 
 BODY_FORWARD_VEC3 = np.array([1.0, 0.0, 0.0])
 
-R_EARTH_M = 6.378E6
+R_EARTH_M = 6.378e6
 
 
 def as_vec3(v: Sequence[float] | FloatArray) -> Vec3:
@@ -75,11 +107,13 @@ def as_vec3(v: Sequence[float] | FloatArray) -> Vec3:
         raise ValueError("Vector contains NaN or infinite values.")
     return arr
 
+
 def unit(v: FloatArray, axis=-1):
     n = np.linalg.norm(v, axis=axis)
     if np.any(n == 0):
         raise ValueError("Norm is zero")
     return v / n
+
 
 def skew(v: Sequence[float] | FloatArray) -> FloatArray:
     """Return the 3x3 skew-symmetric matrix of a 3D vector."""

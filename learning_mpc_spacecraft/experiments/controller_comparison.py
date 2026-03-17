@@ -9,7 +9,7 @@ import quaternion
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-from mpc_spacecraft.dynamics.rigid_body_rotation import SpacecraftDynamics
+from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 from src.mpc_spacecraft.dynamics.disturbances import DisturbanceModel
 from src.mpc_spacecraft.learning.residual_model import ResidualDynamicsModel
 from src.mpc_spacecraft.learning.dataset import DynamicsDataset
@@ -240,7 +240,9 @@ def simulate_closed_loop(
 
         # Simulate with real dynamics + disturbance
         disturbance = disturbance_model.get_disturbance(t)
-        next_state = dynamics.discrete_dynamics_rk4(state, control, disturbance)
+        next_state = dynamics.discrete_dynamics_rk4_rotation(
+            state, control, disturbance
+        )
 
         states.append(next_state.copy())
         controls.append(control.copy())

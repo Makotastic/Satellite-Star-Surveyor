@@ -25,7 +25,7 @@ class AffineErrorDynamicsStep:
 
 
 @runtime_checkable
-class MPCPredictionModel(Protocol):
+class ErrorDynamicsProvider(Protocol):
     """Port interface required by MPC formulations in this package."""
 
     def state_error(self, state: RotState, state_ref: RotState) -> RotErrState:

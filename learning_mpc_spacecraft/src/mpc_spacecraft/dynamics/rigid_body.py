@@ -1,4 +1,4 @@
-"""Rigid body dynamics for spacecraft attitude control."""
+"""Rigid-body spacecraft dynamics with rotational and translational branches."""
 
 from typing import cast
 
@@ -8,44 +8,67 @@ from scipy.linalg import expm
 
 from mpc_spacecraft.utilities.utils import (
     FloatArray,
-    skew,
     RotState,
+    TransState,
+    Vec3,
     I3,
+    skew,
     z3,
     ROT_STATE_SLICES,
+    TRANS_STATE_SLICES,
 )
 
 IDX_STATE_QUAT = ROT_STATE_SLICES.quat
 IDX_STATE_OMEGA = ROT_STATE_SLICES.omega
+IDX_TRANS_POS = TRANS_STATE_SLICES.position
+IDX_TRANS_VEL = TRANS_STATE_SLICES.velocity
 
-# @TODO: Fix quaternion Integrator. RK4 does not natively work well with RK4, Use Lie algebra methods
+# @TODO: Fix quaternion Integrator. RK4 does not natively work well with RK4, Use Lie algebra methods.
 
 
-class RotationalDynamics:
+class SpacecraftDynamics:
     """
-    Spacecraft rigid body dynamics with quaternion attitude representation.
+    Spacecraft dynamics with separate rotation and translation integrations.
 
-    State vector: [q_w, q_x, q_y, q_z, omega_x, omega_y, omega_z]
-    - q: quaternion (4D)
-    - omega: angular velocity in body frame (3D)
+    Rotation state vector: [q_w, q_x, q_y, q_z, omega_x, omega_y, omega_z]
+    Translation state vector: [pos_x, pos_y, pos_z, vel_x, vel_y, vel_z]
 
-    Control input: [tau_x, tau_y, tau_z]
-    - tau: torque in body frame (3D)
+    Rotation input: [tau_x, tau_y, tau_z]
+    Translation input: [acc_x, acc_y, acc_z]
     """
 
-    def __init__(self, inertia: FloatArray, dt: float):
+    def __init__(self, inertia: FloatArray, dt: float, mass: float = 1.0):
         """
         Initialize spacecraft dynamics.
 
         Args:
-            inertia: 3x3 inertia matrix (kg*m^2)
+            inertia: 3x3 inertia matrix (kg*m^2).
             dt: Discretization timestep (s)
+            mass: Spacecraft mass (kg) for translational branch.
         """
-        self.inertia = inertia
-        self.inertia_inv = cast(FloatArray, np.linalg.inv(inertia))
+        self._inertia = inertia
+        self._inertia_inv = cast(FloatArray, np.linalg.inv(inertia))
+        self._mass = float(mass)
         self.dt = dt
 
-    def continuous_dynamics(
+    @property
+    def inertia(self) -> FloatArray:
+        return self._inertia
+
+    @property
+    def inertia_inv(self) -> FloatArray:
+        return self._inertia_inv
+
+    @property
+    def mass(self) -> float:
+        return self._mass
+
+    def set_inertia(self, inertia: FloatArray) -> None:
+        """Set inertia and keep inverse inertia synchronized."""
+        self._inertia = inertia
+        self._inertia_inv = cast(FloatArray, np.linalg.inv(inertia))
+
+    def _continuous_dynamics_rotation(
         self,
         state: RotState,
         control: FloatArray,
@@ -78,13 +101,23 @@ class RotationalDynamics:
             total_torque += disturbance
 
         # Euler's equation: d_omega/dt = I^-1 @ (tau - omega x (I @ omega))
-        omega_dot = self.inertia_inv @ (
-            total_torque - np.cross(omega, self.inertia @ omega)
+        omega_dot = self._inertia_inv @ (
+            total_torque - np.cross(omega, self._inertia @ omega)
         )
 
         return np.concatenate([qu.as_float_array(q_dot), omega_dot])
 
-    def dynamics_error_jacobian(
+    def _continuous_dynamics_translation(
+        self,
+        state: TransState,
+        acceleration: Vec3,
+    ) -> FloatArray:
+        state_dt = np.zeros(6)
+        state_dt[IDX_TRANS_POS] = state[IDX_TRANS_VEL]
+        state_dt[IDX_TRANS_VEL] = acceleration
+        return state_dt
+
+    def rotational_dynamics_error_jacobian(
         self,
         state: RotState,
         input: FloatArray,
@@ -92,17 +125,17 @@ class RotationalDynamics:
 
         omega = state[IDX_STATE_OMEGA]
         skew_w = skew(omega)
-        skew_jw = skew(self.inertia_inv @ omega)
+        skew_jw = skew(self._inertia_inv @ omega)
 
-        dw_block = self.inertia_inv @ (skew_jw - skew_w @ self.inertia)
+        dw_block = self._inertia_inv @ (skew_jw - skew_w @ self._inertia)
 
         A = np.block([[-skew_w, I3], [z3, dw_block]])
 
-        B = np.block([[z3], [self.inertia_inv]])
+        B = np.block([[z3], [self._inertia_inv]])
 
         return A, B
 
-    def discrete_dynamics_rk4(
+    def discrete_dynamics_rk4_rotation(
         self,
         state: RotState,
         control: FloatArray,
@@ -120,10 +153,16 @@ class RotationalDynamics:
             Next state
         """
         # RK4 integration
-        k1 = self.continuous_dynamics(state, control, disturbance)
-        k2 = self.continuous_dynamics(state + 0.5 * self.dt * k1, control, disturbance)
-        k3 = self.continuous_dynamics(state + 0.5 * self.dt * k2, control, disturbance)
-        k4 = self.continuous_dynamics(state + self.dt * k3, control, disturbance)
+        k1 = self._continuous_dynamics_rotation(state, control, disturbance)
+        k2 = self._continuous_dynamics_rotation(
+            state + 0.5 * self.dt * k1, control, disturbance
+        )
+        k3 = self._continuous_dynamics_rotation(
+            state + 0.5 * self.dt * k2, control, disturbance
+        )
+        k4 = self._continuous_dynamics_rotation(
+            state + self.dt * k3, control, disturbance
+        )
 
         next_state = state + (self.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
@@ -133,31 +172,22 @@ class RotationalDynamics:
 
         return next_state
 
-    def discrete_dynamics_euler(
+    def discrete_dynamics_rk4_translation(
         self,
-        state: np.ndarray,
-        control: np.ndarray,
-        disturbance: FloatArray | None = None,
-    ) -> np.ndarray:
-        """
-        Compute discrete-time dynamics using forward Euler integration.
+        state: TransState,
+        acceleration: Vec3,
+    ) -> TransState:
+        """Compute translational discrete-time dynamics using RK4 integration."""
+        k1 = self._continuous_dynamics_translation(state, acceleration)
+        k2 = self._continuous_dynamics_translation(
+            state + 0.5 * self.dt * k1, acceleration
+        )
+        k3 = self._continuous_dynamics_translation(
+            state + 0.5 * self.dt * k2, acceleration
+        )
+        k4 = self._continuous_dynamics_translation(state + self.dt * k3, acceleration)
 
-        Args:
-            state: Current state
-            control: Control input
-            disturbance: Optional disturbance torque
-
-        Returns:
-            Next state
-        """
-        state_dot = self.continuous_dynamics(state, control, disturbance)
-        next_state = state + self.dt * state_dot
-
-        # Normalize quaternion
-        q = qu.quaternion(*next_state[IDX_STATE_QUAT]).normalized()
-        next_state[IDX_STATE_QUAT] = qu.as_float_array(q)
-
-        return next_state
+        return state + (self.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
     def discretize_linear_system(
         self, A: FloatArray, B: FloatArray

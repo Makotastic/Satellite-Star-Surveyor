@@ -5,10 +5,10 @@ import pytest
 import quaternion as qu
 
 from mpc_spacecraft.controllers.mpc_nominal_drake import NominalMPC
-from mpc_spacecraft.controllers.prediction_adapters import (
-    SpacecraftDynamicsPredictionAdapter,
+from mpc_spacecraft.controllers.error_dynamics_adapters import (
+    SpacecraftErrorDynamicsProvider,
 )
-from mpc_spacecraft.controllers.prediction_model import MPCPredictionModel
+from mpc_spacecraft.controllers.error_dynamics_providers import ErrorDynamicsProvider
 from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 from mpc_spacecraft.dynamics.rigid_body_error_constraints import (
     RigidBodyErrorConstraintBuilder,
@@ -59,24 +59,24 @@ def R() -> np.ndarray:
 
 @pytest.mark.unit
 def test_adapter_satisfies_prediction_protocol(dynamics: SpacecraftDynamics):
-    adapter = SpacecraftDynamicsPredictionAdapter(dynamics)
-    assert isinstance(adapter, MPCPredictionModel)
+    adapter = SpacecraftErrorDynamicsProvider(dynamics)
+    assert isinstance(adapter, ErrorDynamicsProvider)
 
 
 @pytest.mark.unit
 def test_adapter_affine_step_matches_legacy_constraint(dynamics: SpacecraftDynamics):
-    adapter = SpacecraftDynamicsPredictionAdapter(dynamics)
+    adapter = SpacecraftErrorDynamicsProvider(dynamics)
     builder = RigidBodyErrorConstraintBuilder(inertia=dynamics.inertia, dt=dynamics.dt)
 
     x_nom_k = np.array([1.0, 0.0, 0.0, 0.0, 0.02, -0.01, 0.015])
     u_nom_k = np.array([0.01, -0.02, 0.005])
-    x_nom_kp1 = dynamics.discrete_dynamics_rk4(x_nom_k, u_nom_k)
+    x_nom_kp1 = dynamics.discrete_dynamics_rk4_rotation(x_nom_k, u_nom_k)
 
     A_ref, B_ref, c_ref = builder.discrete_mpc_constraint(
         x_nom_k=x_nom_k,
         x_nom_kp1=x_nom_kp1,
         u_nom_k=u_nom_k,
-        discrete_dynamics_step=dynamics.discrete_dynamics_rk4,
+        discrete_dynamics_step=dynamics.discrete_dynamics_rk4_rotation,
         discretize_linear_system=dynamics.discretize_linear_system,
     )
     step = adapter.affine_error_dynamics_step(x_nom_k, x_nom_kp1, u_nom_k)
@@ -91,18 +91,18 @@ def test_error_constraint_builder_matches_legacy_constraint(
     dynamics: SpacecraftDynamics,
 ):
     builder = RigidBodyErrorConstraintBuilder(inertia=dynamics.inertia, dt=dynamics.dt)
-    adapter = SpacecraftDynamicsPredictionAdapter(dynamics)
+    adapter = SpacecraftErrorDynamicsProvider(dynamics)
 
     x_nom_k = np.array([1.0, 0.0, 0.0, 0.0, 0.02, -0.01, 0.015])
     u_nom_k = np.array([0.01, -0.02, 0.005])
-    x_nom_kp1 = dynamics.discrete_dynamics_rk4(x_nom_k, u_nom_k)
+    x_nom_kp1 = dynamics.discrete_dynamics_rk4_rotation(x_nom_k, u_nom_k)
 
     step = adapter.affine_error_dynamics_step(x_nom_k, x_nom_kp1, u_nom_k)
     A_new, B_new, c_new = builder.discrete_mpc_constraint(
         x_nom_k=x_nom_k,
         x_nom_kp1=x_nom_kp1,
         u_nom_k=u_nom_k,
-        discrete_dynamics_step=dynamics.discrete_dynamics_rk4,
+        discrete_dynamics_step=dynamics.discrete_dynamics_rk4_rotation,
         discretize_linear_system=dynamics.discretize_linear_system,
     )
 
@@ -111,7 +111,7 @@ def test_error_constraint_builder_matches_legacy_constraint(
     np.testing.assert_allclose(c_new, step.c)
 
 
-class _CountingPredictionAdapter(SpacecraftDynamicsPredictionAdapter):
+class _CountingPredictionAdapter(SpacecraftErrorDynamicsProvider):
     def __init__(self, dynamics: SpacecraftDynamics):
         super().__init__(dynamics)
         self.state_error_calls = 0
@@ -156,8 +156,7 @@ def test_nominal_mpc_uses_injected_prediction_model(
     adapter = _CountingPredictionAdapter(dynamics)
     mpc = NominalMPC(
         horizon=4,
-        dynamics=dynamics,
-        prediction_model=adapter,
+        error_dynamics_provider=adapter,
         Q=Q,
         R=R,
         u_min=-10.0 * np.ones(3),
@@ -172,45 +171,3 @@ def test_nominal_mpc_uses_injected_prediction_model(
     assert adapter.state_error_batch_calls > 0
     assert adapter.state_from_error_calls > 0
     assert adapter.affine_step_calls == mpc.horizon
-
-
-@pytest.mark.unit
-def test_nominal_mpc_default_vs_explicit_adapter_parity(
-    dynamics: SpacecraftDynamics,
-    ref_state: np.ndarray,
-    goal_state: np.ndarray,
-    Q: np.ndarray,
-    R: np.ndarray,
-):
-    mpc_default = NominalMPC(
-        horizon=5,
-        dynamics=dynamics,
-        Q=Q,
-        R=R,
-        u_min=-10.0 * np.ones(3),
-        u_max=10.0 * np.ones(3),
-        max_sqp_iters=1,
-    )
-    mpc_explicit = NominalMPC(
-        horizon=5,
-        dynamics=dynamics,
-        prediction_model=SpacecraftDynamicsPredictionAdapter(dynamics),
-        Q=Q,
-        R=R,
-        u_min=-10.0 * np.ones(3),
-        u_max=10.0 * np.ones(3),
-        max_sqp_iters=1,
-    )
-
-    u_default, x_default, success_default = mpc_default._solve(
-        ref_state, x_goal=goal_state
-    )
-    u_explicit, x_explicit, success_explicit = mpc_explicit._solve(
-        ref_state, x_goal=goal_state
-    )
-
-    assert success_default == success_explicit
-    assert success_default
-
-    np.testing.assert_allclose(u_default, u_explicit, atol=1e-9, rtol=0.0)
-    np.testing.assert_allclose(x_default, x_explicit, atol=1e-9, rtol=0.0)

@@ -8,8 +8,8 @@ from mpc_spacecraft.controllers.mpc_learning_augmented import (
     HybridSpacecraftDynamics,
     LearningAugmentedMPC,
 )
-from mpc_spacecraft.controllers.prediction_adapters import (
-    HybridSpacecraftPredictionAdapter,
+from mpc_spacecraft.controllers.error_dynamics_adapters import (
+    HybridErrorDynamicsProvider,
 )
 from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 from mpc_spacecraft.learning.residual_model import ResidualDynamicsModel
@@ -65,7 +65,7 @@ def test_learning_mpc_uses_hybrid_prediction_adapter(
         max_sqp_iters=1,
     )
 
-    assert isinstance(controller.prediction_model, HybridSpacecraftPredictionAdapter)
+    assert isinstance(controller.err_dynamics_provider, HybridErrorDynamicsProvider)
 
 
 @pytest.mark.unit
@@ -82,11 +82,11 @@ def test_hybrid_adapter_matches_identity_dynamics_when_residual_zero(
         residual_scale=1.0,
     )
 
-    adapter = HybridSpacecraftPredictionAdapter(hybrid)
+    adapter = HybridErrorDynamicsProvider(hybrid)
 
     x_nom_k = np.array([1.0, 0.0, 0.0, 0.0, 0.02, -0.01, 0.015])
     u_nom_k = np.array([0.01, -0.02, 0.005])
-    x_nom_kp1 = hybrid.discrete_dynamics_rk4(x_nom_k, u_nom_k)
+    x_nom_kp1 = hybrid.discrete_dynamics_rk4_rotation(x_nom_k, u_nom_k)
 
     step = adapter.affine_error_dynamics_step(x_nom_k, x_nom_kp1, u_nom_k)
 

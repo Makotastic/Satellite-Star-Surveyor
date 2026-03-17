@@ -3,8 +3,7 @@ import numpy as np
 import quaternion as qu
 from src.mpc_spacecraft.controllers.lqr import LQRController
 from src.mpc_spacecraft.controllers.error_state_mapping import ErrorStateMappingService
-from src.mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
-from mpc_spacecraft.dynamics.rigid_body_rotation import SpacecraftDynamics
+from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 
 
 @pytest.fixture
@@ -60,7 +59,7 @@ def R():
 def A_B(dynamics, ref_state):
     """Linearized A, B at reference."""
     zero_u = np.zeros(3)
-    return dynamics.dynamics_error_jacobian(ref_state, zero_u)
+    return dynamics.rotational_dynamics_error_jacobian(ref_state, zero_u)
 
 
 @pytest.fixture
@@ -259,7 +258,7 @@ def test_closed_loop_convergence(
         # Compute control on error
         u = lqr_discrete.compute_control(error_state)
         # Apply to full dynamics
-        next_state = dynamics.discrete_dynamics_rk4(current_state, u)
+        next_state = dynamics.discrete_dynamics_rk4_rotation(current_state, u)
         states.append(next_state)
         current_state = next_state
 
@@ -290,7 +289,9 @@ def test_lqr_with_disturbance(
         error_state = error_mapping.state_error(current_state, ref_state)
         u = lqr_discrete.compute_control(error_state)
         # Apply with disturbance
-        next_state = dynamics.discrete_dynamics_rk4(current_state, u, disturbance)
+        next_state = dynamics.discrete_dynamics_rk4_rotation(
+            current_state, u, disturbance
+        )
         current_state = next_state
 
     final_error = error_mapping.state_error(current_state, ref_state)
