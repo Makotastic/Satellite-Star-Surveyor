@@ -3,6 +3,7 @@ import numpy as np
 import quaternion as qu
 
 from mpc_spacecraft.controllers.mpc_nominal_drake import NominalMPC
+from mpc_spacecraft.controllers.error_state_mapping import ErrorStateMappingService
 from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 
 
@@ -80,6 +81,11 @@ def mpc(dynamics, horizon, Q, R):
     )
 
 
+@pytest.fixture
+def error_mapping() -> ErrorStateMappingService:
+    return ErrorStateMappingService()
+
+
 # --------------------------------------------------------------------------
 # Helper utilities
 # --------------------------------------------------------------------------
@@ -106,7 +112,7 @@ def test_build_ref_trajectory_tracking(mpc, ref_state):
     x_provided = np.tile(ref_state, (mpc.horizon + 1, 1))
     u_provided = np.zeros((mpc.horizon, mpc.control_dim))
 
-    x_cost, u_cost = mpc.build_ref_trajectory(
+    x_cost, u_cost = mpc._build_ref_trajectory(
         ref_state, x_ref=x_provided, u_ref=u_provided
     )
 
@@ -122,7 +128,7 @@ def test_build_ref_trajectory_goal_constant(mpc, ref_state, goal_state):
     For goal-only case, the cost reference should be constant in time:
     x_cost[k] == x_goal for all k.
     """
-    x_cost, u_cost = mpc.build_ref_trajectory(ref_state, x_goal=goal_state)
+    x_cost, u_cost = mpc._build_ref_trajectory(ref_state, x_goal=goal_state)
 
     # Shapes
     assert x_cost.shape == (mpc.horizon + 1, mpc.state_dim)
@@ -147,7 +153,7 @@ def test_find_initial_guesses_tracking(mpc, ref_state):
     x_ref = np.tile(ref_state, (mpc.horizon + 1, 1))
     u_ref = np.zeros((mpc.horizon, mpc.control_dim))
 
-    x_nom, u_nom = mpc.find_initial_guesses(x0=ref_state, x_ref=x_ref, u_ref=u_ref)
+    x_nom, u_nom = mpc._find_initial_guesses(x0=ref_state, x_ref=x_ref, u_ref=u_ref)
 
     assert x_nom.shape == (mpc.horizon + 1, mpc.state_dim)
     assert u_nom.shape == (mpc.horizon, mpc.control_dim)
@@ -161,7 +167,7 @@ def test_find_initial_guesses_goal_interpolates(mpc, ref_state, goal_state):
     With only x_goal provided, find_initial_guesses should interpolate between
     x0 and x_goal using quaternion slerp and linear omega interpolation.
     """
-    x_nom, u_nom = mpc.find_initial_guesses(x0=ref_state, x_goal=goal_state)
+    x_nom, u_nom = mpc._find_initial_guesses(x0=ref_state, x_goal=goal_state)
 
     # Shapes
     assert x_nom.shape == (mpc.horizon + 1, mpc.state_dim)
@@ -189,7 +195,7 @@ def test_find_initial_guesses_goal_interpolates(mpc, ref_state, goal_state):
 @pytest.mark.unit
 def test_solve_goal_success_and_shapes(mpc, ref_state, goal_state):
     """solve() with a goal-only problem should succeed and return correctly shaped arrays."""
-    u_opt, x_opt, success = mpc.solve(ref_state, x_goal=goal_state)
+    u_opt, x_opt, success = mpc._solve(ref_state, x_goal=goal_state)
 
     assert success
     assert u_opt.shape == (mpc.horizon, mpc.control_dim)
@@ -202,7 +208,7 @@ def test_solve_goal_reduces_orientation_error(mpc, dynamics, ref_state, goal_sta
     For a goal-only problem with x0 != x_goal, the orientation error to the goal
     should decrease over the horizon (in some approximate sense).
     """
-    u_opt, x_opt, success = mpc.solve(ref_state, x_goal=goal_state)
+    u_opt, x_opt, success = mpc._solve(ref_state, x_goal=goal_state)
     assert success
 
     # Use quaternion geodesic angle as a simple orientation error measure
@@ -219,7 +225,7 @@ def test_solve_goal_nontrivial_control(mpc, ref_state, goal_state):
     For a sufficiently different goal, the optimal control sequence should
     not be identically zero (otherwise the system would not move).
     """
-    u_opt, x_opt, success = mpc.solve(ref_state, x_goal=goal_state)
+    u_opt, x_opt, success = mpc._solve(ref_state, x_goal=goal_state)
     assert success
 
     # Check that there is at least one nonzero control entry
@@ -235,7 +241,7 @@ def test_solve_tracking_constant_reference(mpc, dynamics, ref_state):
     x_ref = np.tile(ref_state, (mpc.horizon + 1, 1))
     u_ref = np.zeros((mpc.horizon, mpc.control_dim))
 
-    u_opt, x_opt, success = mpc.solve(ref_state, x_ref=x_ref, u_ref=u_ref)
+    u_opt, x_opt, success = mpc._solve(ref_state, x_ref=x_ref, u_ref=u_ref)
 
     assert success
     np.testing.assert_allclose(x_opt, x_ref, atol=1e-3)
@@ -244,7 +250,7 @@ def test_solve_tracking_constant_reference(mpc, dynamics, ref_state):
 
 
 @pytest.mark.unit
-def test_solve_tracking_from_perturbed_state(mpc, dynamics, ref_state):
+def test_solve_tracking_from_perturbed_state(mpc, error_mapping, ref_state):
     """
     Starting slightly away from a constant reference, the MPC should drive
     the state toward the reference over the horizon.
@@ -256,12 +262,12 @@ def test_solve_tracking_from_perturbed_state(mpc, dynamics, ref_state):
     x0 = ref_state.copy()
     x0[4:] = np.array([0.1, -0.1, 0.05])
 
-    u_opt, x_opt, success = mpc.solve(x0, x_ref=x_ref, u_ref=u_ref)
+    u_opt, x_opt, success = mpc._solve(x0, x_ref=x_ref, u_ref=u_ref)
     assert success
 
     # Measure error using dynamics.state_error w.r.t. reference
-    err_start = dynamics.state_error(x0, x_ref[0])
-    err_end = dynamics.state_error(x_opt[-1], x_ref[-1])
+    err_start = error_mapping.state_error(x0, x_ref[0])
+    err_end = error_mapping.state_error(x_opt[-1], x_ref[-1])
 
     assert np.linalg.norm(err_end) < np.linalg.norm(err_start)
 
@@ -272,7 +278,7 @@ def test_solve_goal_at_equilibrium_returns_zero_control(mpc, ref_state):
     If the initial state is already at the goal, the optimal control for a
     goal-only problem should be (approximately) zero.
     """
-    u_opt, x_opt, success = mpc.solve(ref_state, x_goal=ref_state)
+    u_opt, x_opt, success = mpc._solve(ref_state, x_goal=ref_state)
     assert success
 
     # State should remain at ref_state (up to integration / numerical error)
@@ -297,7 +303,7 @@ def test_control_bounds_respected(mpc, ref_state, goal_state):
     mpc.u_min = -0.01 * np.ones(3)
     mpc.u_max = 0.01 * np.ones(3)
 
-    u_opt, x_opt, success = mpc.solve(ref_state, x_goal=goal_state)
+    u_opt, x_opt, success = mpc._solve(ref_state, x_goal=goal_state)
     assert success
 
     assert np.all(u_opt <= mpc.u_max + 1e-8)
@@ -324,7 +330,7 @@ def test_sqp_multiple_iterations_still_succeeds(
         max_sqp_iters=3,
     )
 
-    u_opt, x_opt, success = mpc_sqp.solve(ref_state, x_goal=goal_state)
+    u_opt, x_opt, success = mpc_sqp._solve(ref_state, x_goal=goal_state)
     assert success
     assert u_opt.shape == (horizon, 3)
     assert x_opt.shape == (horizon + 1, 7)

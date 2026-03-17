@@ -1,10 +1,18 @@
 """Nominal MPC controller using Drake as optimization backend."""
 
+from typing import Any, cast
+
 import numpy as np
 import quaternion as qu
 from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
+
+from .prediction_adapters import SpacecraftDynamicsPredictionAdapter
+from .prediction_model import MPCPredictionModel
 from ..dynamics.rigid_body import SpacecraftDynamics
-from mpc_spacecraft.utilities.utils import FloatArray, RotState
+from mpc_spacecraft.utilities.utils import FloatArray, RotState, ROT_STATE_SLICES
+
+IDX_STATE_QUAT = ROT_STATE_SLICES.quat
+IDX_STATE_OMEGA = ROT_STATE_SLICES.omega
 
 
 class NominalMPC:
@@ -21,12 +29,13 @@ class NominalMPC:
         dynamics: SpacecraftDynamics,
         Q: FloatArray,
         R: FloatArray,
+        prediction_model: MPCPredictionModel | None = None,
         Q_terminal: FloatArray | None = None,
         u_min: FloatArray | None = None,
         u_max: FloatArray | None = None,
         x_min: RotState | None = None,
         x_max: RotState | None = None,
-        max_sqp_iters: int = 2,
+        max_sqp_iters: int = 1,
     ):
         """
         Initialize MPC controller.
@@ -44,7 +53,12 @@ class NominalMPC:
                            for the goal-only (non-tracking) case.
         """
         self.horizon: int = horizon
-        self.dynamics = dynamics
+        # self.dynamics = dynamics
+        self.prediction_model = (
+            prediction_model
+            if prediction_model is not None
+            else SpacecraftDynamicsPredictionAdapter(dynamics)
+        )
 
         self.state_dim: int = 7
         self.control_dim: int = 3
@@ -58,7 +72,7 @@ class NominalMPC:
         self.x_min = x_min
         self.x_max = x_max
 
-        self.max_sqp_iters = max_sqp_iters
+        self.max_sqp_iters: int = max_sqp_iters
 
         self.warm_start_x = None  # shape (N+1, 7)
         self.warm_start_u = None  # shape (N, 3)
@@ -68,7 +82,7 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     # Nominal trajectory builder (for linearization & warm-start)
     # -------------------------------------------------------------------------
-    def find_initial_guesses(
+    def _find_initial_guesses(
         self,
         x0: RotState,
         x_goal: RotState | None = None,
@@ -94,7 +108,12 @@ class NominalMPC:
 
         # 1) Try to reuse previous MPC solution as a warm start
         if self.warm_start_u is not None and self.warm_start_x is not None:
-            x_terminal = x_goal if x_goal is not None else x_ref[-1]
+            if x_goal is not None:
+                x_terminal = x_goal
+            elif x_ref is not None:
+                x_terminal = x_ref[-1]
+            else:
+                raise ValueError("Need to provide either trajectory or terminal goal")
 
             # Shift previous solution one step and append terminal/zero
             initial_u = np.concatenate(
@@ -118,13 +137,13 @@ class NominalMPC:
 
             # Quaternion slerp for attitudes
             x_q = qu.quaternion(*x0[:4]).normalized()
-            x_q_goal = qu.quaternion(*x_goal[:4]).normalized()
+            x_q_goal = qu.quaternion(*x_goal[IDX_STATE_QUAT]).normalized()
             x_q_guess = qu.slerp(x_q, x_q_goal, 0.0, 1.0, arr_interp)
             x_q_guess = qu.as_float_array(x_q_guess).squeeze()
 
             # Linear interpolation for angular velocity
-            x_omega = x0[4:]
-            x_omega_goal = x_goal[4:]
+            x_omega = x0[IDX_STATE_OMEGA]
+            x_omega_goal = x_goal[IDX_STATE_OMEGA]
             x_omega_guess = (1.0 - arr_interp[:, None]) * x_omega[None, :] + arr_interp[
                 :, None
             ] * x_omega_goal[None, :]
@@ -137,7 +156,7 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     # Cost reference builder (what the optimizer should want)
     # -------------------------------------------------------------------------
-    def build_ref_trajectory(
+    def _build_ref_trajectory(
         self,
         x0: RotState,
         x_goal: RotState | None = None,
@@ -171,6 +190,7 @@ class NominalMPC:
 
         # Only terminal goal: cost reference is the constant goal state
         else:
+            assert x_goal is not None
             x_cost_traj = np.tile(x_goal, (self.horizon + 1, 1))
             u_cost_traj = np.zeros((self.horizon, self.control_dim))
 
@@ -179,13 +199,13 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     # Main solve method
     # -------------------------------------------------------------------------
-    def solve(
+    def _solve(
         self,
         x0: RotState,
         x_goal: RotState | None = None,
         x_ref: RotState | None = None,
         u_ref: FloatArray | None = None,
-    ) -> tuple[RotState, FloatArray, bool]:
+    ) -> tuple[FloatArray, RotState, bool]:
         """
         Solve the MPC optimization problem using multiple shooting in
         error coordinates, with optional SQP / real-time iterations.
@@ -207,12 +227,12 @@ class NominalMPC:
         n_err = 6
 
         # 1) Cost reference
-        x_cost_traj, u_cost_traj = self.build_ref_trajectory(
+        x_cost_traj, u_cost_traj = self._build_ref_trajectory(
             x0=x0, x_goal=x_goal, x_ref=x_ref, u_ref=u_ref
         )
 
         # 2) Nominal trajectory for linearization and warm-start
-        x_nom_traj, u_nom_traj = self.find_initial_guesses(
+        x_nom_traj, u_nom_traj = self._find_initial_guesses(
             x0=x0, x_goal=x_goal, x_ref=x_ref, u_ref=u_ref
         )
 
@@ -224,8 +244,8 @@ class NominalMPC:
             max_iters = max(1, int(self.max_sqp_iters))
 
         best_success = False
-        best_x_opt = None
-        best_u_opt = None
+        best_x_opt: RotState | None = None
+        best_u_opt: FloatArray | None = None
 
         # SQP / real-time iteration loop
         for _ in range(max_iters):
@@ -234,23 +254,25 @@ class NominalMPC:
             dx = prog.NewContinuousVariables(self.horizon + 1, n_err, "dx_nom")
             du = prog.NewContinuousVariables(self.horizon, self.control_dim, "du_nom")
 
-            x_bias_k = self.dynamics.state_error_batch(x_nom_traj, x_cost_traj)
+            x_bias_k = self.prediction_model.state_error_batch(x_nom_traj, x_cost_traj)
             u_bias_k = u_nom_traj - u_cost_traj
 
             #    Initial condition in error coordinates (w.r.t nom reference)
-            dx0_nom = self.dynamics.state_error(x0, x_nom_traj[0])
-            prog.AddLinearEqualityConstraint(dx[0], dx0_nom)
+            dx0_nom = self.prediction_model.state_error(x0, x_nom_traj[0])
+            prog.AddLinearEqualityConstraint(dx[0], cast(Any, dx0_nom))
 
             #    Linearized error dynamics: dx_{k+1} = A_k dx_k + B_k du_k
             #    Convert cost cords to norm traj reference
             for k in range(self.horizon):
-                A_k, B_k, c_k = self.dynamics.discrete_mpc_constraint(
-                    x_nom_traj[k], x_nom_traj[k + 1], u_nom_traj[k]
+                step = self.prediction_model.affine_error_dynamics_step(
+                    x_nom_k=x_nom_traj[k],
+                    x_nom_kp1=x_nom_traj[k + 1],
+                    u_nom_k=u_nom_traj[k],
                 )
 
                 prog.AddLinearEqualityConstraint(
-                    dx[k + 1] - A_k @ dx[k] - B_k @ du[k] - c_k,
-                    np.zeros(n_err),
+                    dx[k + 1] - step.A @ dx[k] - step.B @ du[k] - step.c,
+                    cast(Any, np.zeros(n_err)),
                 )
 
             # 5) Control constraints (on absolute u = u_norm_traj + du)
@@ -267,7 +289,7 @@ class NominalMPC:
                     else:
                         ub = np.inf * np.ones(self.control_dim)
 
-                    prog.AddBoundingBoxConstraint(lb, ub, du[k])
+                    prog.AddBoundingBoxConstraint(cast(Any, lb), cast(Any, ub), du[k])
 
             # OPTIONAL ADDITIONAL CONSTRAINTS (BOUNDARIES, SAFETY MARGIN)
 
@@ -296,8 +318,8 @@ class NominalMPC:
             for k in range(self.horizon):
                 initial_du[k] = np.zeros((self.control_dim))
 
-            prog.SetInitialGuess(dx, initial_dx)
-            prog.SetInitialGuess(du, initial_du)
+            prog.SetInitialGuess(dx, cast(Any, initial_dx))
+            prog.SetInitialGuess(du, cast(Any, initial_du))
 
             #    Solve QP
             result = self.solver.Solve(prog)
@@ -319,7 +341,9 @@ class NominalMPC:
 
             x_opt = np.zeros((self.horizon + 1, self.state_dim))
             for k in range(self.horizon + 1):
-                x_opt[k] = self.dynamics.state_from_error(dx_sol[k], x_nom_traj[k])
+                x_opt[k] = self.prediction_model.state_from_error(
+                    dx_sol[k], x_nom_traj[k]
+                )
 
             u_opt = du_sol + u_nom_traj
 
@@ -343,6 +367,8 @@ class NominalMPC:
             return u_opt, x_opt, False
 
         # Save warm start for the next MPC call (absolute trajectories)
+        assert best_x_opt is not None
+        assert best_u_opt is not None
         self.warm_start_x = best_x_opt
         self.warm_start_u = best_u_opt
 
@@ -371,7 +397,7 @@ class NominalMPC:
         Returns:
             First control input u[0].
         """
-        u_opt, _, success = self.solve(x0, x_goal=x_goal, x_ref=x_ref, u_ref=u_ref)
+        u_opt, _, success = self._solve(x0, x_goal=x_goal, x_ref=x_ref, u_ref=u_ref)
 
         if not success:
             print("Warning: MPC optimization failed, returning zero control")

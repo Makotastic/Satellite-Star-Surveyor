@@ -2,6 +2,7 @@ import pytest
 import numpy as np
 import quaternion as qu
 from src.mpc_spacecraft.controllers.lqr import LQRController
+from src.mpc_spacecraft.controllers.error_state_mapping import ErrorStateMappingService
 from src.mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 
 
@@ -21,6 +22,12 @@ def dt():
 def dynamics(inertia, dt):
     """Dynamics instance."""
     return SpacecraftDynamics(inertia, dt)
+
+
+@pytest.fixture
+def error_mapping():
+    """Error-state mapping service."""
+    return ErrorStateMappingService()
 
 
 @pytest.fixture
@@ -236,18 +243,18 @@ def test_cost_to_go(lqr_discrete, small_error_state):
 
 @pytest.mark.integration
 def test_closed_loop_convergence(
-    dynamics, lqr_discrete, ref_state, Q, R, small_error_state
+    dynamics, error_mapping, lqr_discrete, ref_state, Q, R, small_error_state
 ):
     """Integration test: closed-loop simulation with LQR, verify convergence."""
 
     # Start from full state corresponding to small error
-    initial_state = dynamics.state_from_error(small_error_state, ref_state)
+    initial_state = error_mapping.state_from_error(small_error_state, ref_state)
     current_state = initial_state
     states = [current_state]
 
     for _ in range(100):  # 10 seconds
         # Compute error state
-        error_state = dynamics.state_error(current_state, ref_state)
+        error_state = error_mapping.state_error(current_state, ref_state)
         # Compute control on error
         u = lqr_discrete.compute_control(error_state)
         # Apply to full dynamics
@@ -256,12 +263,12 @@ def test_closed_loop_convergence(
         current_state = next_state
 
         # Early stop if converged
-        final_error = dynamics.state_error(current_state, ref_state)
+        final_error = error_mapping.state_error(current_state, ref_state)
         if np.linalg.norm(final_error) < 1e-4:
             break
 
     # Verify convergence: final error small
-    final_error = dynamics.state_error(states[-1], ref_state)
+    final_error = error_mapping.state_error(states[-1], ref_state)
     assert np.linalg.norm(final_error) < 1e-3
     # Quaternions normalized
     q_final = qu.quaternion(*states[-1][:4])
@@ -270,21 +277,21 @@ def test_closed_loop_convergence(
 
 @pytest.mark.integration
 def test_lqr_with_disturbance(
-    dynamics, lqr_discrete, ref_state, Q, R, small_error_state
+    dynamics, error_mapping, lqr_discrete, ref_state, Q, R, small_error_state
 ):
     """Test LQR robustness to small disturbance in closed-loop."""
 
-    initial_state = dynamics.state_from_error(small_error_state, ref_state)
+    initial_state = error_mapping.state_from_error(small_error_state, ref_state)
     current_state = initial_state
     disturbance = np.array([0.05, 0.0, 0.0])  # Small constant disturbance
 
     for _ in range(50):
-        error_state = dynamics.state_error(current_state, ref_state)
+        error_state = error_mapping.state_error(current_state, ref_state)
         u = lqr_discrete.compute_control(error_state)
         # Apply with disturbance
         next_state = dynamics.discrete_dynamics_rk4(current_state, u, disturbance)
         current_state = next_state
 
-    final_error = dynamics.state_error(current_state, ref_state)
+    final_error = error_mapping.state_error(current_state, ref_state)
     # With disturbance, error may not go to zero, but should be bounded small
     assert np.linalg.norm(final_error) < 0.05  # Tolerant of small disturbance

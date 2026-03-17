@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import TypeAlias
+from typing import Final, NamedTuple, TypeAlias
 import numpy as np
 import quaternion
 from numpy.typing import NDArray
@@ -12,6 +12,39 @@ RotErrState: TypeAlias = FloatArray
 RotState: TypeAlias = FloatArray
 
 Quat: TypeAlias = quaternion.quaternion  # type: ignore[attr-defined]
+
+
+class RotStateSlices(NamedTuple):
+    """Constant index slices for the 7D `RotState` ndarray layout.
+
+    Layout: `[q_w, q_x, q_y, q_z, omega_x, omega_y, omega_z]`.
+    """
+
+    quat: slice
+    omega: slice
+
+
+ROT_STATE_SLICES: Final[RotStateSlices] = RotStateSlices(
+    quat=slice(0, 4),
+    omega=slice(4, 7),
+)
+
+
+class RotErrSlices(NamedTuple):
+    """Constant index slices for the 6D `RotErrState` ndarray layout.
+
+    Layout: `[theta_x, theta_y, theta_z, omega_x, omega_y, omega_z]`.
+    """
+
+    error_angle: slice
+    omega: slice
+
+
+ROT_ERROR_SLICES: Final[RotErrSlices] = RotErrSlices(
+    error_angle=slice(0, 3),
+    omega=slice(3, 6),
+)
+
 
 # Unit conversions
 ARCSEC_TO_RAD = np.pi / 648000.0

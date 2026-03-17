@@ -1,6 +1,7 @@
 import pytest
 import numpy as np
 import quaternion
+from src.mpc_spacecraft.controllers.error_state_mapping import ErrorStateMappingService
 from src.mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 
 
@@ -23,6 +24,12 @@ def dynamics(inertia, dt):
 
 
 @pytest.fixture
+def error_mapping():
+    """Error-state mapping service."""
+    return ErrorStateMappingService()
+
+
+@pytest.fixture
 def ref_state():
     """Reference state: identity quaternion, zero angular velocity."""
     return np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
@@ -39,9 +46,9 @@ def small_error_state(ref_state):
     """Small perturbation around reference."""
     state = ref_state.copy()
     # Small rotation: delta_theta = [0.01, 0.02, 0.03]
-    dq = np.quaternion(1.0, 0.005, 0.01, 0.015)  # 0.5 * delta_theta
+    dq = quaternion.quaternion(1.0, 0.005, 0.01, 0.015)  # 0.5 * delta_theta
     dq = dq.normalized()
-    q_ref = np.quaternion(*ref_state[:4])
+    q_ref = quaternion.quaternion(*ref_state[:4])
     q = q_ref * dq
     state[:4] = quaternion.as_float_array(q)
     state[4:] = np.array([0.01, 0.02, 0.0])  # small delta_omega
@@ -58,7 +65,7 @@ def test_quaternion_normalization(dynamics, ref_state, zero_control):
     # Test with non-zero control
     non_zero_control = np.array([1.0, 0.0, 0.0])
     next_state_nonzero = dynamics.discrete_dynamics_rk4(state_unnorm, non_zero_control)
-    q_next_nonzero = np.quaternion(*next_state_nonzero[:4])
+    q_next_nonzero = quaternion.quaternion(*next_state_nonzero[:4])
     assert np.isclose(q_next_nonzero.norm(), 1.0, atol=1e-10)
 
 
@@ -78,13 +85,13 @@ def test_discrete_dynamics_consistency(dynamics, ref_state, zero_control):
 
 
 @pytest.mark.unit
-def test_quaternion_error_small_angle(dynamics):
+def test_quaternion_error_small_angle(error_mapping):
     """Test quaternion error for small angles."""
-    q_ref = np.quaternion(1.0, 0.0, 0.0, 0.0)
+    q_ref = quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
     # Small rotation: delta_theta = [0.01, 0.0, 0.0]
-    dq = np.quaternion(1.0, 0.005, 0.0, 0.0)
+    dq = quaternion.quaternion(1.0, 0.005, 0.0, 0.0)
     q = q_ref * dq.normalized()
-    delta_theta = dynamics.quaternion_error(q, q_ref)
+    delta_theta = error_mapping.quaternion_error(q, q_ref)
     expected = np.array([0.01, 0.0, 0.0])
     np.testing.assert_allclose(delta_theta, expected, rtol=1e-4, atol=1e-8)
     # Check small angle: ||delta_theta|| < 0.1
@@ -92,10 +99,12 @@ def test_quaternion_error_small_angle(dynamics):
 
 
 @pytest.mark.unit
-def test_state_error_and_from_error_roundtrip(dynamics, ref_state, small_error_state):
+def test_state_error_and_from_error_roundtrip(
+    error_mapping, ref_state, small_error_state
+):
     """Test state_error and state_from_error roundtrip."""
-    delta_x = dynamics.state_error(small_error_state, ref_state)
-    reconstructed = dynamics.state_from_error(delta_x, ref_state)
+    delta_x = error_mapping.state_error(small_error_state, ref_state)
+    reconstructed = error_mapping.state_from_error(delta_x, ref_state)
     np.testing.assert_allclose(
         reconstructed[:4], small_error_state[:4], rtol=1e-3, atol=1e-8
     )
@@ -109,7 +118,7 @@ def test_state_error_and_from_error_roundtrip(dynamics, ref_state, small_error_s
 @pytest.mark.unit
 def test_linearize_around_equilibrium(dynamics, ref_state, zero_control):
     """Test linearization at equilibrium: A ≈ 0 for attitude (kinematics), -[I]^{-1} cross terms for omega; B = [I]^{-1}."""
-    A, B = dynamics.linearize(ref_state, zero_control)
+    A, B = dynamics.dynamics_error_jacobian(ref_state, zero_control)
     # At equilibrium, A should have structure: top-left 0 (quaternion kinematics linearizes to 0 for small), etc.
     # For identity q, omega=0, A[:3,:3] ≈ 0, A[:3,3:] ≈ -[omega_skew] but omega=0 so 0, A[3:,:3] ≈ -[I]^{-1} [omega x I e_i] but simplified
     # Expect B ≈ inv(I) for omega part, 0 for quaternion
@@ -148,7 +157,9 @@ def test_discretize_linear_system(dynamics):
 
 
 @pytest.mark.integration
-def test_simple_maneuver_free_motion(dynamics, ref_state, small_error_state, zero_control):
+def test_simple_maneuver_free_motion(
+    dynamics, error_mapping, ref_state, small_error_state, zero_control
+):
     """
     Integration test: free rigid-body motion from a small error with zero control.
     - Quaternion remains normalized.
@@ -168,12 +179,12 @@ def test_simple_maneuver_free_motion(dynamics, ref_state, small_error_state, zer
 
     # 1) Quaternion remains normalized
     for state in states:
-        q = np.quaternion(*state[:4])
+        q = quaternion.quaternion(*state[:4])
         assert np.isclose(q.norm(), 1.0, atol=1e-10)
 
     # 2) Angular velocity remains approximately constant
-    initial_error = dynamics.state_error(small_error_state, ref_state)
-    final_error = dynamics.state_error(states[-1], ref_state)
+    initial_error = error_mapping.state_error(small_error_state, ref_state)
+    final_error = error_mapping.state_error(states[-1], ref_state)
 
     # delta_omega = omega - omega_ref, and omega_ref = 0, so this is just omega
     omega_init = initial_error[3:]
@@ -194,26 +205,27 @@ def test_simple_maneuver_free_motion(dynamics, ref_state, small_error_state, zer
 
 
 @pytest.mark.integration
-def test_error_coords_in_simulation(dynamics, ref_state, small_error_state, zero_control):
+def test_error_coords_in_simulation(
+    dynamics, error_mapping, ref_state, small_error_state, zero_control
+):
     """Verify error coordinates evolve consistently with the linearized dynamics for a single step."""
     dt = dynamics.dt
 
     # Simulate one step
     next_state = dynamics.discrete_dynamics_euler(small_error_state, zero_control)
 
-    delta_x_before = dynamics.state_error(small_error_state, ref_state)
-    delta_x_after  = dynamics.state_error(next_state,       ref_state)
+    delta_x_before = error_mapping.state_error(small_error_state, ref_state)
+    delta_x_after = error_mapping.state_error(next_state, ref_state)
 
     # Get continuous-time linearization at the reference
-    A, B = dynamics.linearize(ref_state, zero_control)
+    A, B = dynamics.dynamics_error_jacobian(ref_state, zero_control)
 
     # First-order prediction in error coordinates:
     # delta_x(t + dt) ≈ delta_x(t) + dt * A * delta_x(t)
     delta_x_pred = delta_x_before + dt * (A @ delta_x_before)
 
     # Compare actual error evolution to linear prediction
-    np.testing.assert_allclose(delta_x_after, delta_x_pred,
-                               rtol=5e-2, atol=1e-4)
+    np.testing.assert_allclose(delta_x_after, delta_x_pred, rtol=5e-2, atol=1e-4)
 
     # Optional: sanity check that nothing exploded numerically
     assert np.linalg.norm(delta_x_after) < 1.0

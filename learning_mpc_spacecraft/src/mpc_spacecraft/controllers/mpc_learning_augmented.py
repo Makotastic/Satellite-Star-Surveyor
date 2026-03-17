@@ -18,7 +18,9 @@ import torch
 from ..dynamics.rigid_body import SpacecraftDynamics
 from ..learning.residual_model import ResidualDynamicsModel
 from ..learning.dataset import DynamicsDataset
+from .error_state_mapping import ErrorStateMappingService
 from .mpc_nominal_drake import NominalMPC
+from .prediction_adapters import HybridSpacecraftPredictionAdapter
 
 
 class HybridSpacecraftDynamics(SpacecraftDynamics):
@@ -67,6 +69,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         self.normalizer = normalizer
         self.residual_scale = float(residual_scale)
         self.device = device
+        self.error_mapping = ErrorStateMappingService()
 
         # Optional: move normalizer stats to device
         if self.normalizer is not None and getattr(self.normalizer, "normalize", False):
@@ -92,7 +95,9 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
     # ------------------------------------------------------------------
     # Residual model helpers
     # ------------------------------------------------------------------
-    def _build_model_input(self, state: np.ndarray, control: np.ndarray) -> torch.Tensor:
+    def _build_model_input(
+        self, state: np.ndarray, control: np.ndarray
+    ) -> torch.Tensor:
         """Create a (1, input_dim) normalized tensor [state, control]."""
         inp = np.concatenate([state, control], axis=-1)
         inp_t = torch.as_tensor(inp, dtype=torch.float32, device=self.device)
@@ -133,9 +138,9 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         # 2) residual prediction
         self.residual_model.eval()
         with torch.no_grad():
-            inp = self._build_model_input(state, control)   # [1, input_dim]
-            res_norm = self.residual_model(inp)             # [1, state_dim]
-            res = self._denormalize_residual(res_norm)      # [1, state_dim]
+            inp = self._build_model_input(state, control)  # [1, input_dim]
+            res_norm = self.residual_model(inp)  # [1, state_dim]
+            res = self._denormalize_residual(res_norm)  # [1, state_dim]
 
         res_np = res.detach().cpu().numpy().squeeze(0)
 
@@ -143,7 +148,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         x_next = x_nom_next + self.residual_scale * res_np
 
         # 4) Normalize quaternion part
-        q = np.quaternion(*x_next[:4]).normalized()
+        q = quaternion.quaternion(*x_next[:4]).normalized()
         x_next[:4] = quaternion.as_float_array(q)
 
         return x_next
@@ -176,7 +181,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         x_next = x_nom_next + self.residual_scale * res_np
 
         # Normalize quaternion
-        q = np.quaternion(*x_next[:4]).normalized()
+        q = quaternion.quaternion(*x_next[:4]).normalized()
         x_next[:4] = quaternion.as_float_array(q)
 
         return x_next
@@ -218,14 +223,14 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
             using hybrid discrete dynamics.
             """
             # Map error to full state/control
-            state = self.state_from_error(delta_x, state_ref)
+            state = self.error_mapping.state_from_error(delta_x, state_ref)
             control = control_ref + delta_u
 
             # One-step hybrid discrete dynamics
             state_next = self.discrete_dynamics_rk4(state, control)
 
             # Error of next state w.r.t. same reference
-            err_next = self.state_error(state_next, state_ref)
+            err_next = self.error_mapping.state_error(state_next, state_ref)
             return err_next
 
         # Columns of A_d: derivative w.r.t. delta_x
@@ -312,7 +317,7 @@ class LearningAugmentedMPC(NominalMPC):
             residual_scale: Trust factor for learned residual.
             device: Torch device ("cpu" or "cuda").
         """
-        
+
         # Wrap the nominal dynamics in a hybrid dynamics object.
         hybrid_dynamics = HybridSpacecraftDynamics(
             base_dynamics=dynamics,
@@ -326,6 +331,7 @@ class LearningAugmentedMPC(NominalMPC):
         super().__init__(
             horizon=horizon,
             dynamics=hybrid_dynamics,
+            prediction_model=HybridSpacecraftPredictionAdapter(hybrid_dynamics),
             Q=Q,
             R=R,
             Q_terminal=Q_terminal,
