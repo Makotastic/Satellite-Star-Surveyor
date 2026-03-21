@@ -2,8 +2,14 @@ from typing import cast
 
 import numpy as np
 
-from mpc_spacecraft.utilities.utils import FloatArray, RotErrState, RotState
-
+from mpc_spacecraft.utilities.utils import (
+    FloatArray,
+    RotErrState,
+    RotState,
+    quat_rotate_vector_a_to_b,
+    BODY_FORWARD_VEC3,
+)
+from mpc_spacecraft.guidance.sun_tracker import AstropySunDirectionModel
 from ..dynamics.rigid_body import SpacecraftDynamics
 from ..dynamics.rigid_body_error_constraints import RigidBodyErrorConstraintBuilder
 from .error_state_mapping import ErrorStateMappingService
@@ -18,8 +24,15 @@ class SpacecraftErrorDynamicsProvider(ErrorDynamicsProvider):
     controller code from concrete plant implementations.
     """
 
-    def __init__(self, dynamics: SpacecraftDynamics):
+    def __init__(
+        self,
+        dynamics: SpacecraftDynamics,
+        sun_model: AstropySunDirectionModel,
+        sun_bc_margin_rad: float,
+    ):
         self.dynamics = dynamics
+        self._sun_model = sun_model
+        self._sun_margin = sun_bc_margin_rad
         self._error_mapping = ErrorStateMappingService()
         self._constraint_builder = RigidBodyErrorConstraintBuilder(
             inertia=dynamics.inertia,
@@ -56,6 +69,13 @@ class SpacecraftErrorDynamicsProvider(ErrorDynamicsProvider):
             A=cast(FloatArray, A_k),
             B=cast(FloatArray, B_k),
             c=cast(FloatArray, c_k),
+        )
+
+    def affine_error_theta_bc(self, x_nom_k: RotState) -> tuple[FloatArray, FloatArray]:
+        sun_vec = self._sun_model.sun_dir_eci()
+        sun_quat = quat_rotate_vector_a_to_b(BODY_FORWARD_VEC3, sun_vec)
+        return self._constraint_builder.affine_error_theta_bc(
+            x_nom_k, sun_quat, self._sun_margin
         )
 
 

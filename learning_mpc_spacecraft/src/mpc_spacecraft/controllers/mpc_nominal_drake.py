@@ -7,10 +7,18 @@ import quaternion as qu
 from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
 
 from .error_dynamics_providers import ErrorDynamicsProvider
-from mpc_spacecraft.utilities.utils import FloatArray, RotState, ROT_STATE_SLICES
+from mpc_spacecraft.utilities.utils import (
+    FloatArray,
+    RotState,
+    ROT_STATE_SLICES,
+    ROT_ERROR_SLICES,
+)
 
 IDX_STATE_QUAT = ROT_STATE_SLICES.quat
 IDX_STATE_OMEGA = ROT_STATE_SLICES.omega
+
+IDX_ROTERR_THETA = ROT_ERROR_SLICES.error_angle
+IDX_ROTERR_OMEGA = ROT_ERROR_SLICES.omega
 
 
 class NominalMPC:
@@ -255,8 +263,7 @@ class NominalMPC:
             dx0_nom = self.err_dynamics_provider.state_error(x0, x_nom_traj[0])
             prog.AddLinearEqualityConstraint(dx[0], cast(Any, dx0_nom))
 
-            #    Linearized error dynamics: dx_{k+1} = A_k dx_k + B_k du_k
-            #    Convert cost cords to norm traj reference
+            #    Linearized error dynamics:
             for k in range(self.horizon):
                 step = self.err_dynamics_provider.affine_error_dynamics_step(
                     x_nom_k=x_nom_traj[k],
@@ -286,6 +293,17 @@ class NominalMPC:
                     prog.AddBoundingBoxConstraint(cast(Any, lb), cast(Any, ub), du[k])
 
             # OPTIONAL ADDITIONAL CONSTRAINTS (BOUNDARIES, SAFETY MARGIN)
+            theta_slack = prog.NewContinuousVariables(self.horizon + 1, "theta_slack")
+            prog.AddBoundingBoxConstraint(0.0, np.inf, theta_slack)
+
+            for k in range(self.horizon):
+                theta_k = dx[k][IDX_ROTERR_THETA]
+                alpha_k, b_k = self.err_dynamics_provider.affine_error_theta_bc(
+                    x_nom_traj[k]
+                )
+                prog.AddLinearConstraint(
+                    2.0 * alpha_k.dot(theta_k) - theta_slack[k] <= b_k
+                )
 
             #    Quadratic costs in error space
             #    - stage costs: dx(k)^T Q dx(k) + du(k)^T R du(k)

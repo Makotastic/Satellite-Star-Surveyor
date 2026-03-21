@@ -12,12 +12,14 @@ import quaternion as qu
 
 from mpc_spacecraft.utilities.utils import (
     FloatArray,
+    Quat,
     RotState,
     expm_so3,
     jacob_r_lie,
     jacob_r_lie_inv,
     logm_so3,
     skew,
+    unskew,
     z3,
     ROT_STATE_SLICES,
 )
@@ -95,3 +97,37 @@ class RigidBodyErrorConstraintBuilder:
         c_k = np.hstack((c_phi, c_omega))
 
         return A_k, B_k, c_k
+
+    def affine_error_theta_bc(
+        self, x_nom_k: RotState, boundary_quat: Quat, margin_rad: float
+    ) -> tuple[FloatArray, FloatArray]:
+        """Build linearized attitude boundary coefficients for Drake MPC.
+
+        The outputs should be used in a linear inequality of the form
+
+        ``prog.AddLinearConstraint(2.0 * alpha_k.dot(theta_k) - s[k] <= b_k)``
+
+        where ``s[k]`` is an optional slack variable.
+
+        Args:
+            x_nom_k: Nominal rotational state at time step ``k``.
+            boundary_quat: Boundary/reference quaternion defining the
+                admissible orientation cone.
+            margin_rad: Allowed angular margin (radians) relative to
+                ``boundary_quat``.
+
+        Returns:
+            Tuple ``(alpha_k, b_k)`` where ``alpha_k`` multiplies
+            ``theta_k`` and ``b_k`` is the right-hand-side bound.
+        """
+        q_k = qu.quaternion(*x_nom_k[IDX_STATE_QUAT])
+        R_k = qu.as_rotation_matrix(q_k)
+        R_b = qu.as_rotation_matrix(boundary_quat)
+
+        R_dif = R_b.T @ R_k
+
+        alpha_k = unskew((R_dif - R_dif.T) / 2)
+
+        b_k = np.asarray(1 + np.cos(margin_rad) - np.trace(R_dif))
+
+        return alpha_k, b_k

@@ -64,18 +64,21 @@ TRANS_STATE_SLICES: Final[TransStateSlice] = TransStateSlice(
 
 
 class FullStateSlices(NamedTuple):
-    """Constant index slices for the 7D `RotState` ndarray layout.
-
-    Layout: `[q_w, q_x, q_y, q_z, omega_x, omega_y, omega_z]`.
-    """
-
     translation: slice
     rotation: slice
+    position: slice
+    velocity: slice
+    quat: slice
+    omega: slice
 
 
 FULL_STATE_SLICES: Final[FullStateSlices] = FullStateSlices(
     translation=slice(0, 6),
     rotation=slice(6, 13),
+    position=slice(0, 3),
+    velocity=slice(3, 6),
+    quat=slice(6, 10),
+    omega=slice(10, 13),
 )
 
 
@@ -126,6 +129,25 @@ def skew(v: Sequence[float] | FloatArray) -> FloatArray:
     mat[2, 0] = -vec[1]
     mat[2, 1] = vec[0]
     return mat
+
+
+def unskew(mat: FloatArray) -> Vec3:
+    """Return the 3D vector associated with a 3x3 skew-symmetric matrix.
+
+    This is the inverse operation of `skew` for valid skew-symmetric inputs.
+
+    Raises:
+        ValueError: If the input is not a finite 3x3 skew-symmetric matrix.
+    """
+    arr = np.asarray(mat, dtype=np.float64)
+    if arr.shape != (3, 3):
+        raise ValueError(f"Expected shape (3, 3), got {arr.shape}.")
+    if not np.all(np.isfinite(arr)):
+        raise ValueError("Matrix contains NaN or infinite values.")
+    if not np.allclose(arr + arr.T, 0.0, atol=1e-12):
+        raise ValueError("Expected a skew-symmetric matrix.")
+
+    return np.array([arr[2, 1], arr[0, 2], arr[1, 0]], dtype=np.float64)
 
 
 def jacob_r_lie(theta: Vec3) -> FloatArray:
@@ -208,3 +230,28 @@ def logm_so3(R: FloatArray) -> Vec3:
         [R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]],
         dtype=np.float64,
     )
+
+
+def quat_rotate_vector_a_to_b(body_forward_vec: Vec3, goal_vec: Vec3) -> Quat:
+    goal_u = unit(np.asarray(goal_vec, dtype=float))
+    body_fwd_u = unit(np.asarray(body_forward_vec, dtype=float))
+
+    dot = float(np.clip(np.dot(body_fwd_u, goal_u), -1.0, 1.0))
+
+    # Aligned: identity rotation.
+    if dot > 1.0 - 1e-8:
+        return quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
+
+    # Anti-parallel: deterministic 180deg about a fixed orthogonal axis.
+    if dot < -1.0 + 1e-8:
+        basis = (
+            np.array([1.0, 0.0, 0.0])
+            if abs(body_fwd_u[0]) < 0.9
+            else np.array([0.0, 1.0, 0.0])
+        )
+        axis = unit(np.cross(body_fwd_u, basis))
+        return quaternion.from_rotation_vector(axis * np.pi)
+
+    axis = unit(np.cross(body_fwd_u, goal_u))
+    theta = np.arccos(dot)
+    return quaternion.from_rotation_vector(axis * theta)

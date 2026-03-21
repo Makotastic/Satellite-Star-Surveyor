@@ -52,3 +52,13 @@ class ErrorDynamicsProvider(Protocol):
     ) -> AffineErrorDynamicsStep:
         """Return one-step affine error dynamics used by MPC constraints."""
         ...
+
+    def affine_error_theta_bc(self, x_nom_k: RotState) -> tuple[FloatArray, FloatArray]:
+        """
+        The outputs should be used in a linear inequality of the form
+
+        ``prog.AddLinearConstraint(2.0 * alpha_k.dot(theta_k) - s[k] <= b_k)``
+
+        where ``s[k]`` is an optional slack variable.
+        """
+        ...
