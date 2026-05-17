@@ -44,6 +44,14 @@ class ErrorDynamicsProvider(Protocol):
         """Reconstruct full state from 6D error coordinates and reference."""
         ...
 
+    def state_from_error_batch(
+        self,
+        delta_xs: RotErrState,
+        states_ref: RotState,
+    ) -> RotState:
+        """Vectorized variant of :meth:`state_from_error`."""
+        ...
+
     def affine_error_dynamics_step(
         self,
         x_nom_k: RotState,

@@ -9,6 +9,7 @@ from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-na
 from .error_dynamics_providers import ErrorDynamicsProvider
 from mpc_spacecraft.utilities.utils import (
     FloatArray,
+    RotErrState,
     RotState,
     ROT_STATE_SLICES,
     ROT_ERROR_SLICES,
@@ -78,6 +79,7 @@ class NominalMPC:
         self.warm_start_u = None  # shape (N, 3)
 
         self.solver = OsqpSolver()
+        self.w_slack = 10e4
 
     # -------------------------------------------------------------------------
     # Nominal trajectory builder (for linearization & warm-start)
@@ -304,6 +306,7 @@ class NominalMPC:
                 prog.AddLinearConstraint(
                     2.0 * alpha_k.dot(theta_k) - theta_slack[k] <= b_k
                 )
+                prog.AddQuadraticCost(self.w_slack * theta_slack[k] ** 2)
 
             #    Quadratic costs in error space
             #    - stage costs: dx(k)^T Q dx(k) + du(k)^T R du(k)
@@ -351,14 +354,10 @@ class NominalMPC:
             dx_sol = result.GetSolution(dx)
             du_sol = result.GetSolution(du)
 
-            x_opt = np.zeros((self.horizon + 1, self.state_dim))
-
-            ### TODO Use Vectorized Error Conversion
-
-            for k in range(self.horizon + 1):
-                x_opt[k] = self.err_dynamics_provider.state_from_error(
-                    dx_sol[k], x_nom_traj[k]
-                )
+            x_opt = self.err_dynamics_provider.state_from_error_batch(
+                cast(RotErrState, dx_sol),
+                cast(RotState, x_nom_traj),
+            )
 
             u_opt = du_sol + u_nom_traj
 

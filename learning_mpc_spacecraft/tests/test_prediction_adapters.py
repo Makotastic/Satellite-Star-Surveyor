@@ -1,5 +1,7 @@
 """Tests for MPC prediction model adapters and interface parity."""
 
+from datetime import datetime, timezone
+
 import numpy as np
 import pytest
 import quaternion as qu
@@ -13,6 +15,8 @@ from mpc_spacecraft.dynamics.rigid_body import SpacecraftDynamics
 from mpc_spacecraft.dynamics.rigid_body_error_constraints import (
     RigidBodyErrorConstraintBuilder,
 )
+from mpc_spacecraft.guidance.sun_tracker import AstropySunDirectionModel
+from mpc_spacecraft.simulation.clock import SimulationClock
 
 
 @pytest.fixture
@@ -37,6 +41,17 @@ def dynamics(inertia: np.ndarray, dt: float) -> SpacecraftDynamics:
 
 
 @pytest.fixture
+def sun_model() -> AstropySunDirectionModel:
+    clock = SimulationClock(start_time_utc=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    return AstropySunDirectionModel(clock=clock)
+
+
+@pytest.fixture
+def sun_bc_margin_rad() -> float:
+    return 0.1
+
+
+@pytest.fixture
 def ref_state() -> np.ndarray:
     return np.array([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
 
@@ -58,14 +73,22 @@ def R() -> np.ndarray:
 
 
 @pytest.mark.unit
-def test_adapter_satisfies_prediction_protocol(dynamics: SpacecraftDynamics):
-    adapter = SpacecraftErrorDynamicsProvider(dynamics)
+def test_adapter_satisfies_prediction_protocol(
+    dynamics: SpacecraftDynamics,
+    sun_model: AstropySunDirectionModel,
+    sun_bc_margin_rad: float,
+):
+    adapter = SpacecraftErrorDynamicsProvider(dynamics, sun_model, sun_bc_margin_rad)
     assert isinstance(adapter, ErrorDynamicsProvider)
 
 
 @pytest.mark.unit
-def test_adapter_affine_step_matches_legacy_constraint(dynamics: SpacecraftDynamics):
-    adapter = SpacecraftErrorDynamicsProvider(dynamics)
+def test_adapter_affine_step_matches_legacy_constraint(
+    dynamics: SpacecraftDynamics,
+    sun_model: AstropySunDirectionModel,
+    sun_bc_margin_rad: float,
+):
+    adapter = SpacecraftErrorDynamicsProvider(dynamics, sun_model, sun_bc_margin_rad)
     builder = RigidBodyErrorConstraintBuilder(inertia=dynamics.inertia, dt=dynamics.dt)
 
     x_nom_k = np.array([1.0, 0.0, 0.0, 0.0, 0.02, -0.01, 0.015])
@@ -89,9 +112,11 @@ def test_adapter_affine_step_matches_legacy_constraint(dynamics: SpacecraftDynam
 @pytest.mark.unit
 def test_error_constraint_builder_matches_legacy_constraint(
     dynamics: SpacecraftDynamics,
+    sun_model: AstropySunDirectionModel,
+    sun_bc_margin_rad: float,
 ):
     builder = RigidBodyErrorConstraintBuilder(inertia=dynamics.inertia, dt=dynamics.dt)
-    adapter = SpacecraftErrorDynamicsProvider(dynamics)
+    adapter = SpacecraftErrorDynamicsProvider(dynamics, sun_model, sun_bc_margin_rad)
 
     x_nom_k = np.array([1.0, 0.0, 0.0, 0.0, 0.02, -0.01, 0.015])
     u_nom_k = np.array([0.01, -0.02, 0.005])
@@ -112,11 +137,17 @@ def test_error_constraint_builder_matches_legacy_constraint(
 
 
 class _CountingPredictionAdapter(SpacecraftErrorDynamicsProvider):
-    def __init__(self, dynamics: SpacecraftDynamics):
-        super().__init__(dynamics)
+    def __init__(
+        self,
+        dynamics: SpacecraftDynamics,
+        sun_model: AstropySunDirectionModel,
+        sun_bc_margin_rad: float,
+    ):
+        super().__init__(dynamics, sun_model, sun_bc_margin_rad)
         self.state_error_calls = 0
         self.state_error_batch_calls = 0
         self.state_from_error_calls = 0
+        self.state_from_error_batch_calls = 0
         self.affine_step_calls = 0
 
     def state_error(self, state: np.ndarray, state_ref: np.ndarray) -> np.ndarray:
@@ -135,6 +166,12 @@ class _CountingPredictionAdapter(SpacecraftErrorDynamicsProvider):
         self.state_from_error_calls += 1
         return super().state_from_error(delta_x, state_ref)
 
+    def state_from_error_batch(
+        self, delta_xs: np.ndarray, states_ref: np.ndarray
+    ) -> np.ndarray:
+        self.state_from_error_batch_calls += 1
+        return super().state_from_error_batch(delta_xs, states_ref)
+
     def affine_error_dynamics_step(
         self,
         x_nom_k: np.ndarray,
@@ -148,12 +185,14 @@ class _CountingPredictionAdapter(SpacecraftErrorDynamicsProvider):
 @pytest.mark.unit
 def test_nominal_mpc_uses_injected_prediction_model(
     dynamics: SpacecraftDynamics,
+    sun_model: AstropySunDirectionModel,
+    sun_bc_margin_rad: float,
     ref_state: np.ndarray,
     goal_state: np.ndarray,
     Q: np.ndarray,
     R: np.ndarray,
 ):
-    adapter = _CountingPredictionAdapter(dynamics)
+    adapter = _CountingPredictionAdapter(dynamics, sun_model, sun_bc_margin_rad)
     mpc = NominalMPC(
         horizon=4,
         error_dynamics_provider=adapter,
@@ -169,5 +208,6 @@ def test_nominal_mpc_uses_injected_prediction_model(
 
     assert adapter.state_error_calls > 0
     assert adapter.state_error_batch_calls > 0
-    assert adapter.state_from_error_calls > 0
+    assert adapter.state_from_error_batch_calls > 0
+    assert adapter.state_from_error_calls == 0
     assert adapter.affine_step_calls == mpc.horizon

@@ -52,6 +52,13 @@ class SpacecraftErrorDynamicsProvider(ErrorDynamicsProvider):
     def state_from_error(self, delta_x: RotErrState, state_ref: RotState) -> RotState:
         return self._error_mapping.state_from_error(delta_x, state_ref)
 
+    def state_from_error_batch(
+        self,
+        delta_xs: RotErrState,
+        states_ref: RotState,
+    ) -> RotState:
+        return self._error_mapping.state_from_error_batch(delta_xs, states_ref)
+
     def affine_error_dynamics_step(
         self,
         x_nom_k: RotState,
