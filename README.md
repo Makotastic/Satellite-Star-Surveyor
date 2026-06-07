@@ -10,13 +10,6 @@ The system is designed around a closed-loop workflow:
 4. Use MPC to compute torque commands for attitude control.
 5. Propagate spacecraft dynamics and visualize the resulting mission behavior.
 
- <img width="2548" height="1359" alt="Screenshot 2026-06-07 181117" src="https://github.com/user-attachments/assets/497662bd-b25d-45f2-8902-0a3f22a5e339" />
-3D visualization of simulation (objects not to scale)
-
-
-<img width="2546" height="1361" alt="Screenshot 2026-06-07 181038" src="https://github.com/user-attachments/assets/3f681317-15be-4067-a441-1dc392458054" />
-Axis aligned camera showing where satellite is pointing
-
 ## Features
 
 * **High-level star observation planner**
@@ -165,6 +158,15 @@ The closed-loop simulation ties the whole project together. It includes:
 * Structured logging
 
 The main reusable API is built around `run_closed_loop_test`, which returns a `ClosedLoopTestResult`. The result can be converted into arrays or a pandas DataFrame for plotting, analysis, or visualization.
+
+### 3D visualization of simulation (objects not to scale)
+<img width="1000" alt="Screenshot 2026-06-07 181117" src="https://github.com/user-attachments/assets/497662bd-b25d-45f2-8902-0a3f22a5e339" />
+
+
+### Axis aligned camera showing where satellite is pointing
+<img width="1000" alt="Screenshot 2026-06-07 181038" src="https://github.com/user-attachments/assets/3f681317-15be-4067-a441-1dc392458054" />
+
+
 
 ## Installation
 
