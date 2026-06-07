@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from src.mpc_spacecraft.utilities.utils import expm_so3, logm_so3, skew
+from mpc_spacecraft.utilities.utils import expm_so3, logm_so3, skew
 
 
 @pytest.mark.unit

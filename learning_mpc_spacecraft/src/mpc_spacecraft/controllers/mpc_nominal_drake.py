@@ -4,22 +4,20 @@ from typing import Any, cast
 
 import numpy as np
 import quaternion as qu
-from pydrake.all import MathematicalProgram, OsqpSolver  # pylint: disable=no-name-in-module
+from pydrake.all import MathematicalProgram, OsqpSolver  
 
 from .error_dynamics_providers import ErrorDynamicsProvider
+from mpc_spacecraft.guidance.sun_tracker import TimeLike
+from mpc_spacecraft.utilities.array_view_generic import BatchArrayView
 from mpc_spacecraft.utilities.utils import (
-    FloatArray,
-    RotErrState,
-    RotState,
-    ROT_STATE_SLICES,
-    ROT_ERROR_SLICES,
+    FloatArray, RotationState, RotationErrorState
 )
 
-IDX_STATE_QUAT = ROT_STATE_SLICES.quat
-IDX_STATE_OMEGA = ROT_STATE_SLICES.omega
+IDX_STATE_QUAT = RotationState.slice_of("quat")
+IDX_STATE_OMEGA = RotationState.slice_of("omega")
 
-IDX_ROTERR_THETA = ROT_ERROR_SLICES.error_angle
-IDX_ROTERR_OMEGA = ROT_ERROR_SLICES.omega
+IDX_ROTERR_THETA = RotationErrorState.slice_of("error_angle")
+IDX_ROTERR_OMEGA = RotationErrorState.slice_of("omega")
 
 
 class NominalMPC:
@@ -39,8 +37,6 @@ class NominalMPC:
         Q_terminal: FloatArray | None = None,
         u_min: FloatArray | None = None,
         u_max: FloatArray | None = None,
-        x_min: RotState | None = None,
-        x_max: RotState | None = None,
         max_sqp_iters: int = 1,
     ):
         """
@@ -61,7 +57,7 @@ class NominalMPC:
         self.horizon: int = horizon
         self.err_dynamics_provider = error_dynamics_provider
 
-        self.state_dim: int = 7
+        self.state_dim: int = RotationState.SIZE
         self.control_dim: int = 3
 
         self.Q = Q
@@ -70,12 +66,10 @@ class NominalMPC:
 
         self.u_min = u_min
         self.u_max = u_max
-        self.x_min = x_min
-        self.x_max = x_max
 
         self.max_sqp_iters: int = max_sqp_iters
 
-        self.warm_start_x = None  # shape (N+1, 7)
+        self.warm_start_x : BatchArrayView[RotationState] | None = None  # shape (N+1, 7)
         self.warm_start_u = None  # shape (N, 3)
 
         self.solver = OsqpSolver()
@@ -86,11 +80,11 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     def _find_initial_guesses(
         self,
-        x0: RotState,
-        x_goal: RotState | None = None,
-        x_ref: RotState | None = None,
+        x0: RotationState,
+        x_goal: RotationState | None = None,
+        x_ref: BatchArrayView[RotationState] | None = None,
         u_ref: FloatArray | None = None,
-    ) -> tuple[RotState, FloatArray]:
+    ) -> tuple[BatchArrayView[RotationState], FloatArray]:
         """
         Build an initial *nominal* guess for (state, control) along the horizon.
 
@@ -105,15 +99,15 @@ class NominalMPC:
         if x_goal is None and x_ref is None:
             raise ValueError("Need to provide either trajectory or terminal goal")
 
-        initial_x: RotState
-        initial_u: FloatArray
+        initial_x = RotationState.batch_zeros(self.horizon + 1)
+        initial_u = np.array([])
 
         # 1) Try to reuse previous MPC solution as a warm start
         if self.warm_start_u is not None and self.warm_start_x is not None:
             if x_goal is not None:
-                x_terminal = x_goal
+                x_terminal = x_goal.data
             elif x_ref is not None:
-                x_terminal = x_ref[-1]
+                x_terminal = x_ref[-1].data
             else:
                 raise ValueError("Need to provide either trajectory or terminal goal")
 
@@ -121,13 +115,13 @@ class NominalMPC:
             initial_u = np.concatenate(
                 [self.warm_start_u[1:], np.zeros((1, self.control_dim))], axis=0
             )
-            initial_x = np.concatenate(
-                [self.warm_start_x[1:], x_terminal[None, :]], axis=0
-            )
+
+            initial_x.data[:-1] = self.warm_start_x[1:].data
+            initial_x.data[-1] = x_terminal
 
         # 2) Full reference provided → just use it as nominal
         elif x_ref is not None:
-            initial_x = x_ref
+            initial_x = x_ref.copy()
             if u_ref is not None:
                 initial_u = u_ref
             else:
@@ -138,19 +132,21 @@ class NominalMPC:
             arr_interp = np.linspace(0.0, 1.0, self.horizon + 1)
 
             # Quaternion slerp for attitudes
-            x_q = qu.quaternion(*x0[:4]).normalized()
-            x_q_goal = qu.quaternion(*x_goal[IDX_STATE_QUAT]).normalized()
+            x_q = qu.quaternion(*x0.quat).normalized()
+            x_q_goal = qu.quaternion(*x_goal.quat).normalized()
             x_q_guess = qu.slerp(x_q, x_q_goal, 0.0, 1.0, arr_interp)
             x_q_guess = qu.as_float_array(x_q_guess).squeeze()
 
             # Linear interpolation for angular velocity
-            x_omega = x0[IDX_STATE_OMEGA]
-            x_omega_goal = x_goal[IDX_STATE_OMEGA]
+            x_omega = x0.omega
+            x_omega_goal = x_goal.omega
             x_omega_guess = (1.0 - arr_interp[:, None]) * x_omega[None, :] + arr_interp[
                 :, None
             ] * x_omega_goal[None, :]
 
-            initial_x = np.concatenate([x_q_guess, x_omega_guess], axis=1)
+            initial_x.quat[:] = x_q_guess
+            initial_x.omega[:] = x_omega_guess
+
             initial_u = np.zeros((self.horizon, self.control_dim))
 
         return initial_x, initial_u
@@ -160,11 +156,11 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     def _build_ref_trajectory(
         self,
-        x0: RotState,
-        x_goal: RotState | None = None,
-        x_ref: RotState | None = None,
+        x0: RotationState,
+        x_goal: RotationState | None = None,
+        x_ref: BatchArrayView[RotationState] | None = None,
         u_ref: FloatArray | None = None,
-    ) -> tuple[RotState, FloatArray]:
+    ) -> tuple[BatchArrayView[RotationState], FloatArray]:
         """
         Build the *cost reference* trajectory (x_cost_traj, u_cost_traj).
 
@@ -193,7 +189,8 @@ class NominalMPC:
         # Only terminal goal: cost reference is the constant goal state
         else:
             assert x_goal is not None
-            x_cost_traj = np.tile(x_goal, (self.horizon + 1, 1))
+            x_cost_traj = RotationState.batch_zeros(self.horizon + 1)
+            x_cost_traj.data = np.tile(x_goal.data, (self.horizon + 1, 1))
             u_cost_traj = np.zeros((self.horizon, self.control_dim))
 
         return x_cost_traj, u_cost_traj
@@ -203,11 +200,13 @@ class NominalMPC:
     # -------------------------------------------------------------------------
     def _solve(
         self,
-        x0: RotState,
-        x_goal: RotState | None = None,
-        x_ref: RotState | None = None,
+        x0: RotationState,
+        x_goal: RotationState | None = None,
+        x_ref: BatchArrayView[RotationState] | None = None,
         u_ref: FloatArray | None = None,
-    ) -> tuple[FloatArray, RotState, bool]:
+        *,
+        current_epoch_utc: TimeLike,
+    ) -> tuple[FloatArray, BatchArrayView[RotationState], bool]:
         """
         Solve the MPC optimization problem using multiple shooting in
         error coordinates, with optional SQP / real-time iterations.
@@ -243,10 +242,10 @@ class NominalMPC:
         if x_ref is not None:
             max_iters = 1
         else:
-            max_iters = max(1, int(self.max_sqp_iters))
+            max_iters = max(1, self.max_sqp_iters)
 
         best_success = False
-        best_x_opt: RotState | None = None
+        best_x_opt: BatchArrayView[RotationState] | None = None
         best_u_opt: FloatArray | None = None
 
         # SQP / real-time iteration loop
@@ -263,7 +262,7 @@ class NominalMPC:
 
             #    Initial condition in error coordinates (w.r.t nom reference)
             dx0_nom = self.err_dynamics_provider.state_error(x0, x_nom_traj[0])
-            prog.AddLinearEqualityConstraint(dx[0], cast(Any, dx0_nom))
+            prog.AddLinearEqualityConstraint(dx[0], dx0_nom.data)
 
             #    Linearized error dynamics:
             for k in range(self.horizon):
@@ -301,7 +300,7 @@ class NominalMPC:
             for k in range(self.horizon):
                 theta_k = dx[k][IDX_ROTERR_THETA]
                 alpha_k, b_k = self.err_dynamics_provider.affine_error_theta_bc(
-                    x_nom_traj[k]
+                    x_nom_traj[k], current_epoch_utc
                 )
                 prog.AddLinearConstraint(
                     2.0 * alpha_k.dot(theta_k) - theta_slack[k] <= b_k
@@ -312,13 +311,13 @@ class NominalMPC:
             #    - stage costs: dx(k)^T Q dx(k) + du(k)^T R du(k)
             #    - terminal cost: dx(N)^T Q_terminal dx(N)
             for k in range(self.horizon):
-                x_err = dx[k] + x_bias_k[k]
+                x_err = dx[k] + x_bias_k[k].data
                 u_err = du[k] + u_bias_k[k]
 
                 prog.AddQuadraticCost(x_err @ self.Q @ x_err, is_convex=True)
                 prog.AddQuadraticCost(u_err @ self.R @ u_err, is_convex=True)
 
-            x_term_err = dx[self.horizon] + x_bias_k[self.horizon]
+            x_term_err = dx[self.horizon] + x_bias_k[self.horizon].data
             prog.AddQuadraticCost(
                 x_term_err @ self.Q_terminal @ x_term_err, is_convex=True
             )
@@ -355,8 +354,8 @@ class NominalMPC:
             du_sol = result.GetSolution(du)
 
             x_opt = self.err_dynamics_provider.state_from_error_batch(
-                cast(RotErrState, dx_sol),
-                cast(RotState, x_nom_traj),
+                RotationErrorState.batch_from_array(dx_sol),
+                x_nom_traj,
             )
 
             u_opt = du_sol + u_nom_traj
@@ -373,7 +372,7 @@ class NominalMPC:
 
         if not best_success:
             # Return zeros if optimization completely failed
-            x_opt = np.zeros((self.horizon + 1, self.state_dim))
+            x_opt = RotationState.batch_zeros(self.horizon + 1)
             u_opt = np.zeros((self.horizon, self.control_dim))
 
             self.warm_start_x = None
@@ -390,10 +389,12 @@ class NominalMPC:
 
     def get_first_control(
         self,
-        x0: RotState,
-        x_ref: RotState | None = None,
+        x0: RotationState,
+        x_ref: BatchArrayView[RotationState] | None = None,
         u_ref: FloatArray | None = None,
-        x_goal: RotState | None = None,
+        x_goal: RotationState | None = None,
+        *,
+        current_epoch_utc: TimeLike,
     ) -> FloatArray:
         """
         Solve MPC and return only the first control input (receding horizon).
@@ -411,7 +412,13 @@ class NominalMPC:
         Returns:
             First control input u[0].
         """
-        u_opt, _, success = self._solve(x0, x_goal=x_goal, x_ref=x_ref, u_ref=u_ref)
+        u_opt, _, success = self._solve(
+            x0,
+            x_goal=x_goal,
+            x_ref=x_ref,
+            u_ref=u_ref,
+            current_epoch_utc=current_epoch_utc,
+        )
 
         if not success:
             print("Warning: MPC optimization failed, returning zero control")

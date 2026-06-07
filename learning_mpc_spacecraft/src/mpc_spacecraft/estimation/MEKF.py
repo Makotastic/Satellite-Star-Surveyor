@@ -2,9 +2,9 @@ import numpy as np
 import quaternion as qu
 from scipy.linalg import expm, solve
 
-from mpc_spacecraft.utilities.utils import Vec3, skew, FloatArray, Quat
+from mpc_spacecraft.utilities.utils import Vec3, skew, FloatArray, Quat, SensorRigidBodyState
 from ..dynamics.disturbances import gravity, jacobian_gravity as J_gravity
-from .sensor_models import GNSSConfig, GyroConfig, IMUConfig, StarTrackerConfig
+from .sensor_models import GNSSConfig, GyroConfig, IMUConfig, StarTrackerConfig, MEKF_ERROR_STATE_SIZE
 from .mekf_state import KinematicEstimatedState
 
 IDX_R = slice(0, 3)
@@ -16,17 +16,27 @@ IDX_BA = slice(12, 15)
 I3 = np.eye(3)
 z3 = np.zeros((3, 3))
 
+# @TODO: Modify to better use ArrayView state representation and clean up
 
 class MEKF:
     def __init__(
         self,
-        state: KinematicEstimatedState,
+        initial_state: SensorRigidBodyState,
         imu_config: IMUConfig,
         gyro_config: GyroConfig,
         gnss_config: GNSSConfig,
         star_config: StarTrackerConfig,
+        start_P: FloatArray,
     ):
-        self.state = state
+
+        initial_state_quat = qu.quaternion(*initial_state.quat)
+
+        self.state = KinematicEstimatedState(initial_state.position, 
+                                                initial_state.velocity, 
+                                                initial_state_quat, 
+                                                initial_state.gyro_bias, 
+                                                initial_state.accel_bias)
+        self.omega = initial_state.omega
 
         self.R_gnss = gnss_config.R
         self.R_st = star_config.R
@@ -40,39 +50,21 @@ class MEKF:
             ]
         )
 
-        # Initial covariance P (CubeSat-class, modest accuracy)
-        sigma_pos = 5.0  # m
-        sigma_vel = 0.1  # m/s
-        sigma_theta = 0.01  # rad (~0.57 deg) attitude error
-        sigma_bg = 0.5 * np.pi / 180.0 / 3600.0  # rad/s (0.5 deg/hr)
-        sigma_ba = 200e-6 * 9.80665  # m/s^2 (200 micro-g)
-
-        self.P = np.diag(
-            [
-                sigma_pos**2,
-                sigma_pos**2,
-                sigma_pos**2,
-                sigma_vel**2,
-                sigma_vel**2,
-                sigma_vel**2,
-                sigma_theta**2,
-                sigma_theta**2,
-                sigma_theta**2,
-                sigma_bg**2,
-                sigma_bg**2,
-                sigma_bg**2,
-                sigma_ba**2,
-                sigma_ba**2,
-                sigma_ba**2,
-            ]
-        )
+        self.P = np.array(start_P, dtype=float, copy=True)
+        if self.P.shape != (MEKF_ERROR_STATE_SIZE, MEKF_ERROR_STATE_SIZE):
+            raise ValueError(
+                f"start_P must have shape {(MEKF_ERROR_STATE_SIZE, MEKF_ERROR_STATE_SIZE)}, "
+                f"got {self.P.shape}"
+            )
+        self.P = 0.5 * (self.P + self.P.T)
+            
 
     def update(
         self,
         dt,
         imu: Vec3,
         gyro: Vec3,
-        gnss_measure: Vec3 | None = None,
+        gnss_measure: FloatArray | None = None,
         st_measure: Quat | None = None,
     ):
         self._predict(imu, gyro, dt)
@@ -83,23 +75,32 @@ class MEKF:
         if gnss_measure is not None:
             self._update_gnss(gnss_measure)
 
-        return self.state
+        x = SensorRigidBodyState.zeros()
+
+        x.position[:] = self.state.r_I
+        x.velocity[:] = self.state.v_I
+        x.quat[:] = qu.as_float_array(self.state.q_BI)
+        x.omega[:] = self.omega
+        x.accel_bias[:] = self.state.b_a
+        x.gyro_bias[:] = self.state.b_g
+
+        return x
 
     def _predict(self, imu: Vec3, gyro: Vec3, dt: float):
-        omega = gyro - self.state.b_g
+        self.omega = gyro - self.state.b_g
         accel_B = imu - self.state.b_a
         R = qu.as_rotation_matrix(self.state.q_BI)
         g_I = gravity(self.state.r_I)
 
         vel = self.state.v_I + (g_I + R @ accel_B) * dt
         pos = self.state.r_I + (vel * dt)
-        q = self.state.q_BI * qu.from_rotation_vector(omega * dt)
+        q = self.state.q_BI * qu.from_rotation_vector(self.omega * dt)
 
         self.state.r_I = pos
         self.state.v_I = vel
         self.state.q_BI = q / abs(q)
 
-        F, G = self._form_F_G(accel_B, omega)
+        F, G = self._form_F_G(accel_B, self.omega)
         Phi, Q_d = self._form_phi_Q(F, G, self.Q_c, dt)
 
         self.P = Phi @ self.P @ Phi.T + Q_d

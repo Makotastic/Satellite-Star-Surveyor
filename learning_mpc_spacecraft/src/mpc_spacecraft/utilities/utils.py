@@ -1,85 +1,190 @@
 from collections.abc import Sequence
-from typing import Final, NamedTuple, TypeAlias
+from typing import TypeAlias
 import numpy as np
 import quaternion
 from numpy.typing import NDArray
+from .array_view_generic import ArrayView
 
-# A type alias for a float64 vector with exactly 3 elements.
-# Note: NumPy typing cannot fully encode shape constraints at runtime.
 Vec3: TypeAlias = NDArray[np.float64]
 FloatArray: TypeAlias = NDArray[np.float64]
-RotErrState: TypeAlias = FloatArray
-RotState: TypeAlias = FloatArray
-TransState: TypeAlias = FloatArray
+Quat: TypeAlias = quaternion.quaternion
 
-Quat: TypeAlias = quaternion.quaternion  # type: ignore[attr-defined]
+class TranslationState(ArrayView):
+    position: FloatArray
+    velocity: FloatArray
 
-
-class RotStateSlices(NamedTuple):
-    """Constant index slices for the 7D `RotState` ndarray layout.
-
-    Layout: `[q_w, q_x, q_y, q_z, omega_x, omega_y, omega_z]`.
-    """
-
-    quat: slice
-    omega: slice
+    __fields__ = [
+        ("position", 3),
+        ("velocity", 3),
+    ]
 
 
-ROT_STATE_SLICES: Final[RotStateSlices] = RotStateSlices(
-    quat=slice(0, 4),
-    omega=slice(4, 7),
-)
+class RotationState(ArrayView):
+    quat: FloatArray
+    omega: FloatArray
+
+    __fields__ = [
+        ("quat", 4),
+        ("omega", 3),
+    ]
+
+    __defaults__ = {
+        "quat": np.array([1.0, 0.0, 0.0, 0.0]),
+    }
+
+class RotationErrorState(ArrayView):
+    error_angle: FloatArray
+    omega: FloatArray
+
+    __fields__ = [
+        ("error_angle", 3),
+        ("omega", 3),
+    ]
 
 
-class RotErrSlices(NamedTuple):
-    """Constant index slices for the 6D `RotErrState` ndarray layout.
+class TranslationControl(ArrayView):
+    acceleration: FloatArray
 
-    Layout: `[theta_x, theta_y, theta_z, omega_x, omega_y, omega_z]`.
-    """
-
-    error_angle: slice
-    omega: slice
+    __fields__ = [
+        ("acceleration", 3),
+    ]
 
 
-ROT_ERROR_SLICES: Final[RotErrSlices] = RotErrSlices(
-    error_angle=slice(0, 3),
-    omega=slice(3, 6),
-)
+class RotationControl(ArrayView):
+    torque: FloatArray
+
+    __fields__ = [
+        ("torque", 3),
+    ]
 
 
-class TransStateSlice(NamedTuple):
-    """Constant index slices for the 6D `TransState` ndarray layout.
+class RigidBodyControl(ArrayView):
+    translation: TranslationControl
+    rotation: RotationControl
+    acceleration: FloatArray
+    torque: FloatArray
 
-    Layout: `[x, y, z, v_x, v_y, v_z]`.
-    """
+    __fields__ = [
+        ("translation", TranslationControl),
+        ("rotation", RotationControl),
+    ]
 
-    position: slice
-    velocity: slice
-
-
-TRANS_STATE_SLICES: Final[TransStateSlice] = TransStateSlice(
-    position=slice(0, 3),
-    velocity=slice(3, 6),
-)
-
-
-class FullStateSlices(NamedTuple):
-    translation: slice
-    rotation: slice
-    position: slice
-    velocity: slice
-    quat: slice
-    omega: slice
+    __aliases__ = {
+        "acceleration": "translation.acceleration",
+        "torque": "rotation.torque",
+    }
 
 
-FULL_STATE_SLICES: Final[FullStateSlices] = FullStateSlices(
-    translation=slice(0, 6),
-    rotation=slice(6, 13),
-    position=slice(0, 3),
-    velocity=slice(3, 6),
-    quat=slice(6, 10),
-    omega=slice(10, 13),
-)
+class RigidBodyState(ArrayView):
+    translation: TranslationState
+    rotation: RotationState
+    position: FloatArray
+    velocity: FloatArray
+    quat: FloatArray
+    omega: FloatArray
+
+    __fields__ = [
+        ("translation", TranslationState),
+        ("rotation", RotationState),
+    ]
+
+    __aliases__ = {
+        "position": "translation.position",
+        "velocity": "translation.velocity",
+        "quat": "rotation.quat",
+        "omega": "rotation.omega",
+    }
+
+
+class SensorBiasState(ArrayView):
+    accel: FloatArray
+    gyro: FloatArray
+
+    __fields__ = [
+        ("accel", 3),
+        ("gyro", 3),
+    ]
+
+class SensorRigidBodyState(ArrayView):
+    position: FloatArray
+    velocity: FloatArray
+    quat: FloatArray
+    omega: FloatArray
+    translation: TranslationState
+    rotation: RotationState
+    gyro_bias: FloatArray
+    accel_bias: FloatArray
+    rigid_body: FloatArray
+
+    __fields__ = [
+        ("rigid_body", RigidBodyState),
+        ("sensor_bias", SensorBiasState),
+    ]
+
+    __aliases__ = {
+        "position": "rigid_body.position",
+        "velocity": "rigid_body.velocity",
+        "quat": "rigid_body.quat",
+        "omega": "rigid_body.omega",
+        "gyro_bias": "sensor_bias.gyro",
+        "accel_bias": "sensor_bias.accel",
+        "translation": "rigid_body.translation",
+        "rotation": "rigid_body.rotation",
+    }
+
+class MeasuredState(ArrayView):
+    quat: FloatArray
+    omega: FloatArray
+    position: FloatArray
+    velocity: FloatArray
+    translation: TranslationState
+    rotation: RotationState
+    inertial_accel: FloatArray
+
+    __fields__ = [
+        ("rigid_body", RigidBodyState),
+        ("inertial_accel", 3)
+    ]
+
+    __aliases__ = {
+        "position": "rigid_body.position",
+        "velocity": "rigid_body.velocity",
+        "quat": "rigid_body.quat",
+        "omega": "rigid_body.omega",
+        "translation": "rigid_body.translation",
+        "rotation": "rigid_body.rotation",
+    }
+
+
+class FullSimState(ArrayView):
+    sensor_rigid_body: SensorRigidBodyState
+    inertial_accel: FloatArray
+    position: FloatArray
+    velocity: FloatArray
+    quat: FloatArray
+    omega: FloatArray
+    gyro_bias: FloatArray
+    accel_bias: FloatArray
+    translation: TranslationState
+    rotation: RotationState
+    rigid_body: RigidBodyState
+
+    __fields__ = [
+        ("sensor_rigid_body", SensorRigidBodyState),
+        ("inertial_accel", 3)
+    ]
+
+    __aliases__ = {
+        "position": "sensor_rigid_body.position",
+        "velocity": "sensor_rigid_body.velocity",
+        "quat": "sensor_rigid_body.quat",
+        "omega": "sensor_rigid_body.omega",
+        "gyro_bias": "sensor_rigid_body.gyro_bias",
+        "accel_bias": "sensor_rigid_body.accel_bias",
+        "translation": "sensor_rigid_body.translation",
+        "rotation": "sensor_rigid_body.rotation",
+        "rigid_body": "sensor_rigid_body.rigid_body",
+    }
 
 
 # Unit conversions
@@ -94,6 +199,8 @@ z3 = np.zeros((3, 3))
 BODY_FORWARD_VEC3 = np.array([1.0, 0.0, 0.0])
 
 R_EARTH_M = 6.378e6
+M_EARTH = 5.972e24  # kg
+G_CONST = 6.674e-11
 
 
 def as_vec3(v: Sequence[float] | FloatArray) -> Vec3:

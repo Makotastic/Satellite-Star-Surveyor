@@ -8,7 +8,9 @@ concrete dynamics implementation.
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from mpc_spacecraft.utilities.utils import FloatArray, RotErrState, RotState
+from mpc_spacecraft.guidance.sun_tracker import TimeLike
+from mpc_spacecraft.utilities.utils import FloatArray, RotationState, RotationErrorState
+from mpc_spacecraft.utilities.array_view_generic import BatchArrayView
 
 
 @dataclass(frozen=True)
@@ -28,40 +30,42 @@ class AffineErrorDynamicsStep:
 class ErrorDynamicsProvider(Protocol):
     """Port interface required by MPC formulations in this package."""
 
-    def state_error(self, state: RotState, state_ref: RotState) -> RotErrState:
+    def state_error(self, state: RotationState, state_ref: RotationState) -> RotationErrorState:
         """Map full states to 6D error coordinates."""
         ...
 
     def state_error_batch(
         self,
-        states: RotState,
-        states_ref: RotState,
-    ) -> RotErrState:
+        states: BatchArrayView[RotationState],
+        states_ref: BatchArrayView[RotationState],
+    ) -> BatchArrayView[RotationErrorState]:
         """Vectorized variant of :meth:`state_error`."""
         ...
 
-    def state_from_error(self, delta_x: RotErrState, state_ref: RotState) -> RotState:
+    def state_from_error(self, delta_x: RotationErrorState, state_ref: RotationState) -> RotationState:
         """Reconstruct full state from 6D error coordinates and reference."""
         ...
 
     def state_from_error_batch(
         self,
-        delta_xs: RotErrState,
-        states_ref: RotState,
-    ) -> RotState:
+        delta_xs: BatchArrayView[RotationErrorState],
+        states_ref: BatchArrayView[RotationState],
+    ) -> BatchArrayView[RotationState]:
         """Vectorized variant of :meth:`state_from_error`."""
         ...
 
     def affine_error_dynamics_step(
         self,
-        x_nom_k: RotState,
-        x_nom_kp1: RotState,
+        x_nom_k: RotationState,
+        x_nom_kp1: RotationState,
         u_nom_k: FloatArray,
     ) -> AffineErrorDynamicsStep:
         """Return one-step affine error dynamics used by MPC constraints."""
         ...
 
-    def affine_error_theta_bc(self, x_nom_k: RotState) -> tuple[FloatArray, FloatArray]:
+    def affine_error_theta_bc(
+        self, x_nom_k: RotationState, current_epoch_utc: TimeLike
+    ) -> tuple[FloatArray, FloatArray]:
         """
         The outputs should be used in a linear inequality of the form
 

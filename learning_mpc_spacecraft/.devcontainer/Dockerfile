@@ -20,6 +20,17 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     build-essential \
     python3-venv \
     python3-dev \
+    libgl1 \
+    libgl1-mesa-dri \
+    libegl1 \
+    libx11-6 \
+    libxrandr2 \
+    libxinerama1 \
+    libxcursor1 \
+    libxi6 \
+    libxxf86vm1 \
+    libasound2t64 \
+    libpulse0 \
     vim \
     && rm -rf /var/lib/apt/lists/*
 
@@ -45,9 +56,6 @@ RUN python -m ipykernel install --name=mpc_spacecraft --display-name "Python (mp
 # ---- Locale & time zone setup ----
 ENV LC_ALL=C.UTF-8
 ENV LANG=C.UTF-8
-
-# Expose Meshcat default port
-EXPOSE 7000
 
 # Default command
 CMD [ "bash" ]

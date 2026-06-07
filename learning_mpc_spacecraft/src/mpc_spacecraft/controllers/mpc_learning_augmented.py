@@ -48,6 +48,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         self,
         base_dynamics: SpacecraftDynamics,
         residual_model: ResidualDynamicsModel,
+        mpc_dt: float,
         normalizer: Optional[DynamicsDataset] = None,
         residual_scale: float = 1.0,
         device: str = "cpu",
@@ -62,8 +63,9 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
             residual_scale: Trust factor alpha applied to residual output.
             device: Torch device ("cpu" or "cuda").
         """
-        # Initialize as a standard SpacecraftDynamics with same inertia, dt.
-        super().__init__(inertia=base_dynamics.inertia, dt=base_dynamics.dt)
+        # Initialize as a standard SpacecraftDynamics with the same inertia.
+        super().__init__(inertia=base_dynamics.inertia)
+        self._mpc_dt = float(mpc_dt)
 
         self.residual_model = residual_model.to(device)
         self.normalizer = normalizer
@@ -123,7 +125,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         self,
         state: np.ndarray,
         control: np.ndarray,
-        disturbance: Optional[np.ndarray] = None,
+        delta_time: float,
     ) -> np.ndarray:
         """
         Hybrid RK4 discrete step:
@@ -133,7 +135,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         where x_nominal_next is the nominal RK4 step from SpacecraftDynamics.
         """
         # 1) nominal step (super() uses rotational continuous dynamics + RK4)
-        x_nom_next = super().discrete_dynamics_rk4_rotation(state, control, disturbance)
+        x_nom_next = super().discrete_dynamics_rk4_rotation(state, control, delta_time)
 
         # 2) residual prediction
         self.residual_model.eval()
@@ -157,7 +159,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         self,
         state: np.ndarray,
         control: np.ndarray,
-        disturbance: Optional[np.ndarray] = None,
+        delta_time: float,
     ) -> np.ndarray:
         """
         Hybrid forward-Euler step.
@@ -167,8 +169,8 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         consistent.
         """
         # 1) nominal Euler step
-        state_dot = self._continuous_dynamics_rotation(state, control, disturbance)
-        x_nom_next = state + self.dt * state_dot
+        state_dot = self._continuous_dynamics_rotation(state, control)
+        x_nom_next = state + float(delta_time) * state_dot
 
         # 2) residual prediction
         self.residual_model.eval()
@@ -227,7 +229,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
             control = control_ref + delta_u
 
             # One-step hybrid discrete dynamics
-            state_next = self.discrete_dynamics_rk4_rotation(state, control)
+            state_next = self.discrete_dynamics_rk4_rotation(state, control, self._mpc_dt)
 
             # Error of next state w.r.t. same reference
             err_next = self.error_mapping.state_error(state_next, state_ref)
@@ -263,6 +265,7 @@ class HybridSpacecraftDynamics(SpacecraftDynamics):
         self,
         A: np.ndarray,
         B: np.ndarray,
+        delta_time: float,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         For the hybrid model, `linearize` already returns discrete-time
@@ -288,6 +291,7 @@ class LearningAugmentedMPC(NominalMPC):
         self,
         horizon: int,
         dynamics: SpacecraftDynamics,
+        mpc_dt: float,
         Q: np.ndarray,
         R: np.ndarray,
         residual_model: ResidualDynamicsModel,
@@ -322,6 +326,7 @@ class LearningAugmentedMPC(NominalMPC):
         hybrid_dynamics = HybridSpacecraftDynamics(
             base_dynamics=dynamics,
             residual_model=residual_model,
+            mpc_dt=mpc_dt,
             normalizer=normalizer,
             residual_scale=residual_scale,
             device=device,
@@ -330,7 +335,7 @@ class LearningAugmentedMPC(NominalMPC):
         # Initialize the parent MPC with the hybrid dynamics.
         super().__init__(
             horizon=horizon,
-            error_dynamics_provider=HybridErrorDynamicsProvider(hybrid_dynamics),
+            error_dynamics_provider=HybridErrorDynamicsProvider(hybrid_dynamics, mpc_dt),
             Q=Q,
             R=R,
             Q_terminal=Q_terminal,

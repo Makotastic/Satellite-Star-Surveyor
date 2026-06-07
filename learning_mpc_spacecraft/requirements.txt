@@ -13,10 +13,10 @@ torch>=2.0.0
 torchvision>=0.15.0
 
 # Visualization
-meshcat>=0.3.0
 matplotlib>=3.5.0
 pyvista>=0.40.0
 vispy>=0.12.0
+ursina
 
 # Development tools
 pytest>=7.0.0
@@ -34,3 +34,4 @@ notebook>=6.4.0
 tqdm>=4.60.0
 pyyaml>=6.0
 astropy>=6.0.0
+skyfield

@@ -22,7 +22,7 @@
       },
       "extensions": [
         "ms-python.python",
-        "ms-python.vscode-pylance",
+        "meta.pyrefly",
         "ms-toolsai.jupyter",
         "ms-azuretools.vscode-docker",
         "ms-vscode.cpptools"
@@ -31,9 +31,7 @@
   },
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
-  "forwardPorts": [
-    7000
-  ],
+  "forwardPorts": [],
   "mounts": [],
   "runArgs": [
     "--network=host",

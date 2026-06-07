@@ -1,10 +1,10 @@
 from mpc_spacecraft.utilities.utils import (
     FloatArray,
+    RigidBodyState,
     Vec3,
     unit,
     R_EARTH_M,
     BODY_FORWARD_VEC3,
-    FULL_STATE_SLICES,
 )
 
 from typing import TypeAlias
@@ -12,16 +12,10 @@ from enum import IntEnum
 import pandas as pd
 import numpy as np
 import quaternion as qu
-from typing import cast
-
-IDX_POS = FULL_STATE_SLICES.position
-IDX_VEL = FULL_STATE_SLICES.velocity
-IDX_QUAT = FULL_STATE_SLICES.quat
-IDX_OMEGA = FULL_STATE_SLICES.omega
+from typing import Any, cast
 
 AngleLike: TypeAlias = float | FloatArray
 BoolLike: TypeAlias = bool | FloatArray
-
 
 # Modes
 class PlanModes(IntEnum):
@@ -44,7 +38,7 @@ class StarPlanner:
         validate_targets_dataframe(targets)
 
         self._targets: pd.DataFrame = convert_ECI_pos_to_unit_vec(targets)
-        self._targets["obs_time"] = 0
+        self._targets["obs_time"] = 0.0
 
         self._sun_keepout = np.deg2rad(sun_keepout_deg)
         self._earth_margin = np.deg2rad(earth_margin_deg)
@@ -56,7 +50,7 @@ class StarPlanner:
 
     def _update_target(
         self,
-        body_state: FloatArray,
+        body_state: RigidBodyState,
         earth_dir_I: Vec3,
         sun_dir_I: Vec3,
         body_dir_I: Vec3,
@@ -100,10 +94,10 @@ class StarPlanner:
         self,
         earth_angle: AngleLike,
         sun_angle: AngleLike,
-        body_state: FloatArray,
+        body_state: RigidBodyState,
     ) -> tuple[BoolLike, BoolLike, BoolLike]:
 
-        pos_I = body_state[IDX_POS]
+        pos_I = body_state.position
         r = np.linalg.norm(pos_I)
         earth_occlusion_half_angle = np.arcsin(np.clip(R_EARTH_M / r, -1.0, 1.0))
 
@@ -114,14 +108,18 @@ class StarPlanner:
         return feasible, earth_ok, sun_ok
 
     def tick(
-        self, body_state: FloatArray, dt: float, sun_dir_I: Vec3
+        self, body_state: RigidBodyState, delta_time: float, sun_dir_I: Vec3
     ) -> tuple[Vec3 | None, PlanModes, bool]:
 
         if self.mode == PlanModes.OBSERVING:
-            self._targets.loc[self._current_target_idx, "obs_time"] += dt
+            if self._current_target_idx is None:
+                raise RuntimeError("Planner is observing without an active target")
+
+            obs_time = float(cast(Any, self._targets.at[self._current_target_idx, "obs_time"]))
+            self._targets.at[self._current_target_idx, "obs_time"] = obs_time + delta_time
 
         targets_complete = cast(
-            bool, np.all(self._targets["req_obs_time"] > self._targets["obs_time"])
+            bool, np.all(self._targets["req_obs_time"] <= self._targets["obs_time"])
         )
 
         earth_dir_I, body_dir_I = compute_earth_body_directions(body_state)
@@ -159,7 +157,7 @@ class StarPlanner:
                 self.mode = PlanModes.SLEWING
             return star_vec, self.mode, targets_complete
 
-        mag_omega = np.linalg.norm(body_state[IDX_OMEGA])
+        mag_omega = np.linalg.norm(body_state.omega)
 
         if dist_angle > self._stabilize_threshold:
             self.mode = PlanModes.SLEWING
@@ -189,12 +187,12 @@ def compute_earth_sun_body_angles(
     return earth_angle, sun_angle, dist_angle
 
 
-def compute_earth_body_directions(body_state: FloatArray) -> tuple[Vec3, Vec3]:
+def compute_earth_body_directions(body_state: RigidBodyState) -> tuple[Vec3, Vec3]:
 
-    pos_I = body_state[IDX_POS]
+    pos_I = body_state.position
     earth_dir_I = unit(-pos_I)
 
-    rot_quat = qu.quaternion(*body_state[IDX_QUAT])
+    rot_quat = qu.quaternion(*body_state.quat)
     body_dir_I = qu.rotate_vectors(rot_quat, BODY_FORWARD_VEC3)
 
     return earth_dir_I, body_dir_I

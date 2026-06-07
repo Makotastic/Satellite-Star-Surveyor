@@ -1,13 +1,18 @@
 """Disturbance models for spacecraft dynamics."""
 
 import numpy as np
+from typing import cast
+
 from numpy.linalg import norm
 
-from mpc_spacecraft.utilities.utils import FloatArray, Vec3
-
-
-M_EARTH = 5.972e24  # kg
-G_CONST = 6.674e-11
+from mpc_spacecraft.utilities.utils import (
+    FloatArray,
+    G_CONST,
+    M_EARTH,
+    RigidBodyControl,
+    RigidBodyState,
+    Vec3,
+)
 
 
 class DisturbanceModel:
@@ -15,65 +20,104 @@ class DisturbanceModel:
     Model for external disturbances acting on the spacecraft.
 
     Supports various disturbance types:
-    - Constant bias
-    - Random noise
-    - Sinusoidal disturbances
+    - Gravity acceleration
+    - Constant bias torque
+    - Random noise torque
+    - Sinusoidal torque disturbances
     - Atmospheric drag (simplified)
     """
 
     def __init__(
         self,
         bias: np.ndarray | None = None,
-        noise_std: float = 0.0,
-        sinusoidal_amplitude: float = 0.0,
-        sinusoidal_frequency: float = 0.0,
+        noise_std: float | None = None,
+        sinusoidal_amplitude: float | None = None,
+        sinusoidal_frequency: float | None = None,
         seed: int | None = None,
+        enable_gravity: bool = True,
     ):
         """
         Initialize disturbance model.
 
         Args:
-            bias: Constant bias torque [tau_x, tau_y, tau_z] (N*m)
-            noise_std: Standard deviation of random noise (N*m)
-            sinusoidal_amplitude: Amplitude of sinusoidal disturbance (N*m)
-            sinusoidal_frequency: Frequency of sinusoidal disturbance (rad/s)
-            seed: Random seed for reproducibility
+            bias: Constant bias torque [tau_x, tau_y, tau_z] (N*m). Enables
+                bias torque when provided and nonzero.
+            noise_std: Standard deviation of random noise torque (N*m). Enables
+                noise torque when provided and nonzero.
+            sinusoidal_amplitude: Amplitude of sinusoidal torque disturbance
+                (N*m). Enables sinusoidal torque only when both sinusoidal
+                parameters are provided and nonzero.
+            sinusoidal_frequency: Frequency of sinusoidal torque disturbance
+                (rad/s). Enables sinusoidal torque only when both sinusoidal
+                parameters are provided and nonzero.
+            seed: Random seed for reproducibility.
+            enable_gravity: Whether to include central-gravity acceleration.
+                Enabled by default.
         """
-        self.bias = bias if bias is not None else np.zeros(3)
-        self.noise_std = noise_std
-        self.sinusoidal_amplitude = sinusoidal_amplitude
-        self.sinusoidal_frequency = sinusoidal_frequency
+        self.bias = np.asarray(bias, dtype=np.float64) if bias is not None else np.zeros(3)
+        if self.bias.shape != (3,):
+            raise ValueError(f"Expected bias shape (3,), got {self.bias.shape}.")
+        self.noise_std = float(noise_std) if noise_std is not None else 0.0
+        self.sinusoidal_amplitude = (
+            float(sinusoidal_amplitude) if sinusoidal_amplitude is not None else 0.0
+        )
+        self.sinusoidal_frequency = (
+            float(sinusoidal_frequency) if sinusoidal_frequency is not None else 0.0
+        )
+        self.enable_gravity = enable_gravity
+        self.enable_bias = bias is not None and not np.allclose(self.bias, 0.0)
+        self.enable_noise = noise_std is not None and self.noise_std != 0.0
+        self.enable_sinusoidal = (
+            sinusoidal_amplitude is not None
+            and sinusoidal_frequency is not None
+            and self.sinusoidal_amplitude != 0.0
+            and self.sinusoidal_frequency != 0.0
+        )
 
         if seed is not None:
             np.random.seed(seed)
 
-    def get_disturbance(self, time: float) -> FloatArray:
+    def get_disturbance(self, time: float, state: RigidBodyState) -> RigidBodyControl:
         """
-        Compute total disturbance torque at given time.
+        Compute total full-body disturbance at given time and state.
 
         Args:
-            time: Current simulation time (s)
+            time: Current simulation time (s).
+            state: Full body state with inertial position in the first 3 entries.
 
         Returns:
-            Disturbance torque [tau_d_x, tau_d_y, tau_d_z] (N*m)
+            Full-body disturbance vector with translational acceleration in the
+            first 3 entries (m/s^2) and rotational torque in the last 3 entries
+            (N*m).
         """
-        disturbance = self.bias.copy()
+        disturbance = RigidBodyControl.zeros()
+
+        if self.enable_gravity:
+            disturbance.acceleration[:] = gravity(state.position)
+
+        torque_disturbance = np.zeros(3, dtype=np.float64)
+
+        if self.enable_bias:
+            torque_disturbance += self.bias
 
         # Add random noise
-        if self.noise_std > 0:
-            disturbance += np.random.normal(0, self.noise_std, 3)
+        if self.enable_noise:
+            torque_disturbance += np.random.normal(0, self.noise_std, 3)
 
         # Add sinusoidal component
-        if self.sinusoidal_amplitude > 0:
+        if self.enable_sinusoidal:
             phase = self.sinusoidal_frequency * time
             sinusoidal = self.sinusoidal_amplitude * np.array(
                 [
                     np.sin(phase),
                     np.sin(phase + 2 * np.pi / 3),
                     np.sin(phase + 4 * np.pi / 3),
-                ]
+                ],
+                dtype=np.float64,
             )
-            disturbance += sinusoidal
+            torque_disturbance += sinusoidal
+
+        disturbance.torque[:] = torque_disturbance
 
         return disturbance
 
@@ -126,11 +170,11 @@ def jacobian_gravity(pos: Vec3) -> FloatArray:
     Returns:
         3x3 Jacobian matrix of gravitational acceleration (1/s^2).
     """
-    r_vec = pos - np.zeros(3)
-    return -(G_CONST * M_EARTH) * (
+    r_vec = np.asarray(pos, dtype=np.float64) - np.zeros(3, dtype=np.float64)
+    return cast(FloatArray, -(G_CONST * M_EARTH) * (
         (1 / norm(r_vec) ** 3) * np.eye(3)
         - (3 / norm(r_vec) ** 5) * np.outer(r_vec, r_vec)
-    )
+    ))
 
 
 def gravity(pos: Vec3) -> Vec3:
@@ -143,5 +187,5 @@ def gravity(pos: Vec3) -> Vec3:
     Returns:
         Gravitational acceleration vector (m/s^2).
     """
-    r_vec = pos - np.zeros(3)
-    return -((G_CONST * M_EARTH) / (norm(r_vec) ** 3)) * r_vec
+    r_vec = np.asarray(pos, dtype=np.float64) - np.zeros(3, dtype=np.float64)
+    return cast(Vec3, -((G_CONST * M_EARTH) / (norm(r_vec) ** 3)) * r_vec)

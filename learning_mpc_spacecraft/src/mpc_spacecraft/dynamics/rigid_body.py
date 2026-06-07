@@ -1,5 +1,5 @@
 """Rigid-body spacecraft dynamics with rotational and translational branches."""
-
+from mpc_spacecraft.dynamics.disturbances import DisturbanceModel
 from typing import cast
 
 import numpy as np
@@ -8,23 +8,14 @@ from scipy.linalg import expm
 
 from mpc_spacecraft.utilities.utils import (
     FloatArray,
-    RotState,
-    TransState,
+    RigidBodyControl,
+    RigidBodyState,
+    RotationState,
+    TranslationState,
     Vec3,
-    I3,
-    skew,
-    z3,
-    ROT_STATE_SLICES,
-    TRANS_STATE_SLICES,
 )
 
-IDX_STATE_QUAT = ROT_STATE_SLICES.quat
-IDX_STATE_OMEGA = ROT_STATE_SLICES.omega
-IDX_TRANS_POS = TRANS_STATE_SLICES.position
-IDX_TRANS_VEL = TRANS_STATE_SLICES.velocity
-
 # @TODO: Fix quaternion Integrator. RK4 does not natively work well with RK4, Use Lie algebra methods.
-
 
 class SpacecraftDynamics:
     """
@@ -37,19 +28,24 @@ class SpacecraftDynamics:
     Translation input: [acc_x, acc_y, acc_z]
     """
 
-    def __init__(self, inertia: FloatArray, dt: float, mass: float = 1.0):
+    def __init__(
+        self,
+        inertia: FloatArray,
+        disturbance: DisturbanceModel,
+        mass: float = 1.0,
+    ):
         """
         Initialize spacecraft dynamics.
 
         Args:
             inertia: 3x3 inertia matrix (kg*m^2).
-            dt: Discretization timestep (s)
+            disturbance: External disturbance model.
             mass: Spacecraft mass (kg) for translational branch.
         """
         self._inertia = inertia
         self._inertia_inv = cast(FloatArray, np.linalg.inv(inertia))
-        self._mass = float(mass)
-        self.dt = dt
+        self._mass = mass
+        self._disturbance_model = disturbance
 
     @property
     def inertia(self) -> FloatArray:
@@ -70,24 +66,22 @@ class SpacecraftDynamics:
 
     def _continuous_dynamics_rotation(
         self,
-        state: RotState,
-        control: FloatArray,
-        disturbance: FloatArray | None = None,
-    ) -> FloatArray:
+        state: RotationState,
+        torque: Vec3
+    ) -> RotationState:
         """
         Compute continuous-time dynamics: dx/dt = f(x, u).
 
         Args:
             state: State vector [q_w, q_x, q_y, q_z, omega_x, omega_y, omega_z]
-            control: Control input [tau_x, tau_y, tau_z]
-            disturbance: Optional disturbance torque [tau_d_x, tau_d_y, tau_d_z]
+            torque: torque input [tau_x, tau_y, tau_z]
 
         Returns:
             State derivative [dq/dt, d_omega/dt]
         """
         # Extract state components
-        q = qu.quaternion(*state[IDX_STATE_QUAT])
-        omega = state[IDX_STATE_OMEGA]
+        q = qu.quaternion(*state.quat)
+        omega = state.omega
 
         # Normalize quaternion
         q = q.normalized()
@@ -95,52 +89,50 @@ class SpacecraftDynamics:
         # Quaternion kinematics: dq/dt = 0.5 * q * omega_body
         q_dot = 0.5 * q * qu.from_vector_part(omega)
 
-        # Total torque (control + disturbance)
-        total_torque = control.copy()
-        if disturbance is not None:
-            total_torque += disturbance
-
         # Euler's equation: d_omega/dt = I^-1 @ (tau - omega x (I @ omega))
         omega_dot = self._inertia_inv @ (
-            total_torque - np.cross(omega, self._inertia @ omega)
+            torque - np.cross(omega, self._inertia @ omega)
         )
 
-        return np.concatenate([qu.as_float_array(q_dot), omega_dot])
+        x_dot = RotationState.zeros()
+        x_dot.quat[:] = qu.as_float_array(q_dot)
+        x_dot.omega[:] = omega_dot
+        return x_dot
 
     def _continuous_dynamics_translation(
         self,
-        state: TransState,
+        state: TranslationState,
         acceleration: Vec3,
-    ) -> FloatArray:
-        state_dt = np.zeros(6)
-        state_dt[IDX_TRANS_POS] = state[IDX_TRANS_VEL]
-        state_dt[IDX_TRANS_VEL] = acceleration
+    ) -> TranslationState:
+        state_dt = TranslationState.zeros()
+        state_dt.position[:] = state.velocity.copy()
+        state_dt.velocity[:] = acceleration.copy()
         return state_dt
 
-    def rotational_dynamics_error_jacobian(
-        self,
-        state: RotState,
-        input: FloatArray,
-    ) -> tuple[FloatArray, FloatArray]:
+    # def rotational_dynamics_error_jacobian(
+    #     self,
+    #     state: RotState,
+    #     input: FloatArray,
+    # ) -> tuple[FloatArray, FloatArray]:
 
-        omega = state[IDX_STATE_OMEGA]
-        skew_w = skew(omega)
-        skew_jw = skew(self._inertia_inv @ omega)
+    #     omega = state[IDX_STATE_OMEGA]
+    #     skew_w = skew(omega)
+    #     skew_jw = skew(self._inertia_inv @ omega)
 
-        dw_block = self._inertia_inv @ (skew_jw - skew_w @ self._inertia)
+    #     dw_block = self._inertia_inv @ (skew_jw - skew_w @ self._inertia)
 
-        A = np.block([[-skew_w, I3], [z3, dw_block]])
+    #     A = np.block([[-skew_w, I3], [z3, dw_block]])
 
-        B = np.block([[z3], [self._inertia_inv]])
+    #     B = np.block([[z3], [self._inertia_inv]])
 
-        return A, B
+    #     return A, B
 
     def discrete_dynamics_rk4_rotation(
         self,
-        state: RotState,
-        control: FloatArray,
-        disturbance: FloatArray | None = None,
-    ) -> RotState:
+        state: RotationState,
+        torque: Vec3,
+        delta_time: float,
+    ) -> RotationState:
         """
         Compute discrete-time dynamics using RK4 integration.
 
@@ -152,45 +144,88 @@ class SpacecraftDynamics:
         Returns:
             Next state
         """
+        dt = float(delta_time)
         # RK4 integration
-        k1 = self._continuous_dynamics_rotation(state, control, disturbance)
+        k1 = self._continuous_dynamics_rotation(state, torque)
         k2 = self._continuous_dynamics_rotation(
-            state + 0.5 * self.dt * k1, control, disturbance
+            RotationState.from_array(state.data + 0.5 * dt * k1.data), torque
         )
         k3 = self._continuous_dynamics_rotation(
-            state + 0.5 * self.dt * k2, control, disturbance
+            RotationState.from_array(state.data + 0.5 * dt * k2.data), torque
         )
         k4 = self._continuous_dynamics_rotation(
-            state + self.dt * k3, control, disturbance
+            RotationState.from_array(state.data + dt * k3.data), torque
         )
 
-        next_state = state + (self.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        next_state = RotationState.from_array(
+            state.data
+            + (dt / 6.0)
+            * (k1.data + 2 * k2.data + 2 * k3.data + k4.data)
+        )
 
         # Normalize quaternion
-        q = qu.quaternion(*next_state[IDX_STATE_QUAT]).normalized()
-        next_state[IDX_STATE_QUAT] = qu.as_float_array(q)
+        q = qu.quaternion(*next_state.quat).normalized()
+        next_state.quat[:] = qu.as_float_array(q)
 
         return next_state
 
     def discrete_dynamics_rk4_translation(
         self,
-        state: TransState,
+        state: TranslationState,
         acceleration: Vec3,
-    ) -> TransState:
+        delta_time: float,
+    ) -> TranslationState:
         """Compute translational discrete-time dynamics using RK4 integration."""
+        dt = float(delta_time)
         k1 = self._continuous_dynamics_translation(state, acceleration)
         k2 = self._continuous_dynamics_translation(
-            state + 0.5 * self.dt * k1, acceleration
+            TranslationState.from_array(state.data + 0.5 * dt * k1.data), acceleration
         )
         k3 = self._continuous_dynamics_translation(
-            state + 0.5 * self.dt * k2, acceleration
+            TranslationState.from_array(state.data + 0.5 * dt * k2.data), acceleration
         )
-        k4 = self._continuous_dynamics_translation(state + self.dt * k3, acceleration)
+        k4 = self._continuous_dynamics_translation(
+            TranslationState.from_array(state.data + dt * k3.data), acceleration
+        )
 
-        return state + (self.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        return TranslationState.from_array(
+            state.data
+            + (dt / 6.0)
+            * (k1.data + 2 * k2.data + 2 * k3.data + k4.data)
+        )
+
+    def discretize_dynamics_rk4_full_state(
+        self,
+        state: RigidBodyState,
+        inputs: RigidBodyControl,
+        interval_start_time: float,
+        delta_time: float,
+    ) -> RigidBodyState:
+        trans_state = state.translation
+        trans_control = inputs.acceleration
+
+        rot_state = state.rotation
+        rot_control = inputs.torque
+
+        disturbance = self._disturbance_model.get_disturbance(interval_start_time, state)
+
+        trans_acceleration = trans_control + disturbance.acceleration
+        rot_torque = rot_control + disturbance.torque
+
+        next_trans_state = self.discrete_dynamics_rk4_translation(
+            trans_state, trans_acceleration, delta_time
+        )
+        next_rot_state = self.discrete_dynamics_rk4_rotation(
+            rot_state, rot_torque, delta_time
+        )
+
+        next_state = RigidBodyState.zeros()
+        next_state.translation.data[:] = next_trans_state.data
+        next_state.rotation.data[:] = next_rot_state.data
+        return next_state
 
     def discretize_linear_system(
-        self, A: FloatArray, B: FloatArray
+        self, A: FloatArray, B: FloatArray, delta_time: float
     ) -> tuple[FloatArray, FloatArray]:
         """
         Discretize linear system using matrix exponential.
@@ -208,9 +243,10 @@ class SpacecraftDynamics:
         m = B.shape[1]
 
         # Build augmented matrix
+        dt = float(delta_time)
         M = np.zeros((n + m, n + m))
-        M[:n, :n] = A * self.dt
-        M[:n, n:] = B * self.dt
+        M[:n, :n] = A * dt
+        M[:n, n:] = B * dt
 
         # Matrix exponential
         exp_M = expm(M)
@@ -220,7 +256,7 @@ class SpacecraftDynamics:
 
         # Supposedly More Robust Solution
         # I = np.eye(6)
-        # Ad = np.linalg.solve(I - 0.5 * self.dt * A, I + 0.5 * self.dt * A)
-        # Bd = np.linalg.solve(I - 0.5 * self.dt * A, self.dt * B)
+        # Ad = np.linalg.solve(I - 0.5 * dt * A, I + 0.5 * dt * A)
+        # Bd = np.linalg.solve(I - 0.5 * dt * A, dt * B)
 
         return Ad, Bd

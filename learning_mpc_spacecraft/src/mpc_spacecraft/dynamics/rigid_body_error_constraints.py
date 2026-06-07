@@ -12,8 +12,8 @@ import quaternion as qu
 
 from mpc_spacecraft.utilities.utils import (
     FloatArray,
+    RotationState,
     Quat,
-    RotState,
     expm_so3,
     jacob_r_lie,
     jacob_r_lie_inv,
@@ -21,14 +21,9 @@ from mpc_spacecraft.utilities.utils import (
     skew,
     unskew,
     z3,
-    ROT_STATE_SLICES,
 )
 
-IDX_STATE_QUAT = ROT_STATE_SLICES.quat
-IDX_STATE_OMEGA = ROT_STATE_SLICES.omega
-
-
-StateStepFn = Callable[[RotState, FloatArray], RotState]
+StateStepFn = Callable[[RotationState, FloatArray], RotationState]
 DiscretizeFn = Callable[[FloatArray, FloatArray], tuple[FloatArray, FloatArray]]
 
 
@@ -42,13 +37,13 @@ class RigidBodyErrorConstraintBuilder:
 
     def discrete_phi_lie_shifting_constraint(
         self,
-        x_nom_k: RotState,
-        x_nom_kp1: RotState,
+        x_nom_k: RotationState,
+        x_nom_kp1: RotationState,
     ) -> tuple[FloatArray, FloatArray, FloatArray]:
         """Linearized Lie-angle shifting constraint for one step."""
-        q_nom_k = qu.quaternion(*x_nom_k[IDX_STATE_QUAT])
-        q_nom_kp1 = qu.quaternion(*x_nom_kp1[IDX_STATE_QUAT])
-        omega_nom_k = x_nom_k[IDX_STATE_OMEGA]
+        q_nom_k = qu.quaternion(*x_nom_k.quat)
+        q_nom_kp1 = qu.quaternion(*x_nom_kp1.quat)
+        omega_nom_k = x_nom_k.omega
         omega_nom_k_angle = omega_nom_k * self.dt
 
         R_nom_k = qu.as_rotation_matrix(q_nom_k)
@@ -68,15 +63,15 @@ class RigidBodyErrorConstraintBuilder:
 
     def discrete_mpc_constraint(
         self,
-        x_nom_k: RotState,
-        x_nom_kp1: RotState,
+        x_nom_k: RotationState,
+        x_nom_kp1: RotationState,
         u_nom_k: FloatArray,
         *,
         discrete_dynamics_step: StateStepFn,
         discretize_linear_system: DiscretizeFn,
     ) -> tuple[FloatArray, FloatArray, FloatArray]:
         """Build affine error dynamics step: dx(k+1) = A dx(k) + B du(k) + c."""
-        omega = x_nom_k[IDX_STATE_OMEGA]
+        omega = x_nom_k.omega
         skew_w = skew(omega)
         skew_jw = skew(self.inertia_inv @ omega)
 
@@ -86,7 +81,7 @@ class RigidBodyErrorConstraintBuilder:
         B_omega, D_omega = discretize_linear_system(B_omega_c, D_omega_c)
 
         x_pred_kp1 = discrete_dynamics_step(x_nom_k, u_nom_k)
-        c_omega = x_pred_kp1[IDX_STATE_OMEGA] - x_nom_kp1[IDX_STATE_OMEGA]
+        c_omega = x_pred_kp1.omega - x_nom_kp1.omega
 
         A_phi, B_phi, c_phi = self.discrete_phi_lie_shifting_constraint(
             x_nom_k, x_nom_kp1
@@ -99,7 +94,7 @@ class RigidBodyErrorConstraintBuilder:
         return A_k, B_k, c_k
 
     def affine_error_theta_bc(
-        self, x_nom_k: RotState, boundary_quat: Quat, margin_rad: float
+        self, x_nom_k: RotationState, boundary_quat: Quat, margin_rad: float
     ) -> tuple[FloatArray, FloatArray]:
         """Build linearized attitude boundary coefficients for Drake MPC.
 
@@ -120,7 +115,7 @@ class RigidBodyErrorConstraintBuilder:
             Tuple ``(alpha_k, b_k)`` where ``alpha_k`` multiplies
             ``theta_k`` and ``b_k`` is the right-hand-side bound.
         """
-        q_k = qu.quaternion(*x_nom_k[IDX_STATE_QUAT])
+        q_k = qu.quaternion(*x_nom_k.quat)
         R_k = qu.as_rotation_matrix(q_k)
         R_b = qu.as_rotation_matrix(boundary_quat)
 

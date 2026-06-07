@@ -7,14 +7,16 @@ services:
     volumes:
       - .:/workspace
       - venv:/opt/venv
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
     working_dir: /workspace
     ports:
-      - "7000:7000"  # Meshcat visualization
-      - "8888:8888"  # Jupyter notebook
+      - "8888:8888" # Jupyter notebook
     network_mode: host
     stdin_open: true
     tty: true
     environment:
+      - DISPLAY=${DISPLAY}
+      - QT_X11_NO_MITSHM=1
       - PYTHONPATH=/workspace/src
       - LC_ALL=C.UTF-8
       - LANG=C.UTF-8

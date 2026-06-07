@@ -1,7 +1,7 @@
 """Visualization module for real-time 3D rendering."""
 
-from .meshcat_viz import MeshcatVisualizer
+from .ursina_viz import UrsinaSpacecraftVisualizer
 
 __all__ = [
-    "MeshcatVisualizer",
+    "UrsinaSpacecraftVisualizer",
 ]
