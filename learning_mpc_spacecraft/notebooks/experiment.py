@@ -3,33 +3,59 @@
 Run this file after installing the package in editable mode, for example:
 
     pip install -e .
+
+The script stores experiment logs in ``experiments/closed_loop_experiment.pkl``
+and writes figures under ``experiments/figures``.
 """
 
-from mpc_spacecraft.simulation import ClosedLoopTestConfig, run_closed_loop_test
+from mpc_spacecraft.simulation import (
+    ClosedLoopTestConfig,
+    SpacecraftPhysicalConfig,
+    run_closed_loop_test,
+)
 import matplotlib.pyplot as plt
 import numpy as np
 import quaternion as qu
+import pickle
 from pathlib import Path
 
 
 SHOW_PLOTS = False
 SHOW_URSINA = True
-FIGURE_DIR = Path("reports/figures")
+EXPERIMENT_DIR = Path("./experiments")
+FIGURE_DIR = Path("./experiments/figures")
+DATA_FILE = Path("./experiments/closed_loop_experiment.pkl")
+EXPERIMENT_DIR.mkdir(parents=True, exist_ok=True)
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-config = ClosedLoopTestConfig.defaults()
+config = ClosedLoopTestConfig.defaults(
+    # spacecraft=SpacecraftPhysicalConfig.medium_space_telescope()
+)
+
 result = run_closed_loop_test(config)
 
 # Plotting-friendly outputs.
 logs = result.to_dataframe()
 arrays = result.to_arrays()
 
-if SHOW_URSINA:
-    from mpc_spacecraft.visualization import UrsinaSpacecraftVisualizer
+experiment_payload = {
+    "logs": logs,
+    "targets": config.targets.targets.copy(),
+    "metadata": {
+        "data_format": "mpc_spacecraft_closed_loop_experiment_v1",
+        "description": "Closed-loop spacecraft experiment logs and visualization target metadata.",
+        "sim_dt": config.timing.sim_dt,
+        "mpc_dt": config.timing.mpc_dt,
+        "sim_cycles": config.timing.sim_cycles,
+        "rng_seed": config.rng_seed,
+    },
+}
 
-    viz = UrsinaSpacecraftVisualizer()
-    viz.visualize_closed_loop_dataframe(logs, fps=30.0, every_n=10, play=True)
+with DATA_FILE.open("wb") as data_handle:
+    pickle.dump(experiment_payload, data_handle)
+
+print(f"Saved experiment data to {DATA_FILE}")
 
 print(logs[["time", "guidance_mode", "is_complete", "control_tx", "control_ty", "control_tz"]].head())
 
@@ -58,7 +84,9 @@ ax.set_xlabel("Time [s]")
 ax.set_ylabel("Angle error [deg]")
 ax.grid(True)
 fig.tight_layout()
-fig.savefig(FIGURE_DIR / "closed_loop_goal_angle_error.png", dpi=200)
+angle_error_figure = FIGURE_DIR / "closed_loop_goal_angle_error.png"
+fig.savefig(angle_error_figure, dpi=200)
+print(f"Saved figure to {angle_error_figure}")
 if SHOW_PLOTS:
     plt.show()
 else:
@@ -112,8 +140,16 @@ for title, component_labels, unit, true_cols, estimated_cols in state_groups:
     axes[-1].set_xlabel("Time [s]")
     fig.tight_layout()
     figure_name = title.lower().replace(" ", "_")
-    fig.savefig(FIGURE_DIR / f"closed_loop_estimated_vs_sim_{figure_name}.png", dpi=200)
+    state_figure = FIGURE_DIR / f"closed_loop_estimated_vs_sim_{figure_name}.png"
+    fig.savefig(state_figure, dpi=200)
+    print(f"Saved figure to {state_figure}")
     if SHOW_PLOTS:
         plt.show()
     else:
         plt.close(fig)
+
+if SHOW_URSINA:
+    from mpc_spacecraft.visualization import UrsinaSpacecraftVisualizer
+
+    viz = UrsinaSpacecraftVisualizer()
+    viz.visualize_closed_loop_dataframe(logs, fps=30.0, every_n=1, play=True, targets=config.targets.targets)

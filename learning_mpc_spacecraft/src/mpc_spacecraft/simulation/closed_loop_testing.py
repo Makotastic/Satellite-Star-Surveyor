@@ -38,8 +38,8 @@ class ClosedLoopTimingConfig:
     """Timing parameters for a closed-loop test."""
 
     sim_dt: float = 0.1
-    mpc_dt: float = 0.5
-    sim_cycles: int = 300
+    mpc_dt: float = 1
+    sim_cycles: int = 6000
     start_epoch_utc: datetime = field(default_factory=lambda: datetime(2025, 1, 9))
 
 
@@ -93,7 +93,7 @@ class ClosedLoopMPCConfig:
 
     step_horizon: int = 30
     q_weight: FloatArray = field(
-        default_factory=lambda: np.diag([20.0, 20.0, 20.0, 2.0, 2.0, 2.0]).astype(np.float64)
+        default_factory=lambda: np.diag([20.0, 20.0, 20.0, 10.0, 10.0, 10.0]).astype(np.float64)
     )
     r_weight: FloatArray = field(default_factory=lambda: 5.0 * np.eye(3, dtype=np.float64))
     q_terminal: FloatArray | None = None

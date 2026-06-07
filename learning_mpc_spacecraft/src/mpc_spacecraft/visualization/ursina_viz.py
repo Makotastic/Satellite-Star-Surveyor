@@ -25,9 +25,17 @@ DEFAULT_POSITION_SCALE = 1.0e-6
 SPACECRAFT_VIS_SIZE = 0.45
 SUN_VIS_DISTANCE = 45.0
 SUN_VIS_RADIUS = 2.0
+TARGET_STAR_DISTANCE = 1000.0
+TARGET_STAR_RADIUS = 3
+BODY_FORWARD_RAY_LENGTH = 100000.0
 CAMERA_DEFAULT_DISTANCE = 12.0
 CAMERA_MIN_DISTANCE = 2.0
 CAMERA_MAX_DISTANCE = 80.0
+BODY_FORWARD_CAMERA_BACK_OFFSET = 3.0
+BODY_FORWARD_CAMERA_UP_OFFSET = 0.9
+BODY_FORWARD_CAMERA_LOOK_AHEAD = 12.0
+ATTITUDE_BODY_TO_WORLD = "body_to_world"
+EARTH_TEXTURE_SIZE = 500
 
 
 @dataclass(frozen=True)
@@ -49,10 +57,11 @@ class UrsinaSpacecraftVisualizer:
         Left/Right: Step one frame backward/forward.
         PageUp/PageDown: Skip ahead/back by ``skip_frames``.
         Home/End: Jump to first/last frame.
-        Mouse drag: Orbit camera around the satellite.
+        Left mouse drag: Orbit camera around the satellite.
         Mouse wheel: Zoom in/out while staying satellite-relative.
         +/-: Increase/decrease playback speed.
-        R: Reset camera orbit.
+        R: Reset camera orbit and zoom.
+        F: Toggle body-forward camera fixed to the spacecraft.
     """
 
     def __init__(
@@ -80,6 +89,9 @@ class UrsinaSpacecraftVisualizer:
         self._camera_yaw_deg = 35.0
         self._camera_pitch_deg = 22.0
         self._camera_distance = CAMERA_DEFAULT_DISTANCE
+        self._camera_dragging = False
+        self._body_forward_camera = False
+        self._target_dirs: np.ndarray | None = None
 
     def visualize_closed_loop_dataframe(
         self,
@@ -88,9 +100,10 @@ class UrsinaSpacecraftVisualizer:
         every_n: int = 1,
         play: bool = True,
         run: bool = True,
+        targets: Any | None = None,
     ) -> "UrsinaSpacecraftVisualizer":
         """Load closed-loop dataframe logs and optionally start the Ursina app."""
-        self.load_closed_loop_dataframe(logs, fps=fps, every_n=every_n, play=play)
+        self.load_closed_loop_dataframe(logs, fps=fps, every_n=every_n, play=play, targets=targets)
         if run:
             self.run()
         return self
@@ -102,9 +115,10 @@ class UrsinaSpacecraftVisualizer:
         every_n: int = 1,
         play: bool = True,
         run: bool = True,
+        targets: Any | None = None,
     ) -> "UrsinaSpacecraftVisualizer":
         """Load closed-loop arrays and optionally start the Ursina app."""
-        self.load_closed_loop_arrays(arrays, fps=fps, every_n=every_n, play=play)
+        self.load_closed_loop_arrays(arrays, fps=fps, every_n=every_n, play=play, targets=targets)
         if run:
             self.run()
         return self
@@ -115,9 +129,11 @@ class UrsinaSpacecraftVisualizer:
         fps: float = 30.0,
         every_n: int = 1,
         play: bool = True,
+        targets: Any | None = None,
     ) -> None:
         """Normalize dataframe logs produced by ``ClosedLoopTestResult.to_dataframe()``."""
         self._set_data(_downsample_data(_closed_loop_dataframe_to_data(logs), every_n), fps, play)
+        self._target_dirs = _targets_to_unit_vectors(targets) if targets is not None else None
 
     def load_closed_loop_arrays(
         self,
@@ -125,18 +141,22 @@ class UrsinaSpacecraftVisualizer:
         fps: float = 30.0,
         every_n: int = 1,
         play: bool = True,
+        targets: Any | None = None,
     ) -> None:
         """Normalize dictionary logs produced by ``ClosedLoopTestResult.to_arrays()``."""
         self._set_data(_downsample_data(_closed_loop_arrays_to_data(arrays), every_n), fps, play)
+        self._target_dirs = _targets_to_unit_vectors(targets) if targets is not None else None
 
     def run(self) -> None:
         """Create the Ursina scene and start the interactive render loop."""
         if self._data is None:
             raise RuntimeError("Load closed-loop data before calling run().")
 
-        from panda3d.core import loadPrcFileData
+        from panda3d.core import loadPrcFileData  # type: ignore[import-not-found]
 
         loadPrcFileData("", "audio-library-name null")
+        import __main__
+
         from ursina import Ursina, application, camera, window
 
         try:
@@ -167,6 +187,8 @@ class UrsinaSpacecraftVisualizer:
         self._app.input = input
         globals()["update"] = update
         globals()["input"] = input
+        setattr(__main__, "update", update)
+        setattr(__main__, "input", input)
         camera.clip_plane_far = 100000
         self._app.run()
 
@@ -178,7 +200,7 @@ class UrsinaSpacecraftVisualizer:
         self._frame_accumulator = 0.0
 
     def _setup_scene(self) -> None:
-        from ursina import AmbientLight, Color, DirectionalLight, Entity, Mesh, Text, Vec3, color
+        from ursina import AmbientLight, Color, DirectionalLight, Entity, Mesh, PointLight, Text, Vec3, color, invoke
 
         assert self._data is not None
         earth_radius = R_EARTH_M * self.position_scale
@@ -187,17 +209,40 @@ class UrsinaSpacecraftVisualizer:
         self._entities["earth"] = Entity(
             model="sphere",
             scale=earth_radius * 2.0,
-            color=color.rgb(32, 87, 190),
+            texture=_create_earth_texture(),
+            color=color.white,
         )
+        invoke(setattr, self._entities["earth"], "texture", _create_earth_texture(), delay=0.0)
+        self._entities["earth"].unlit = False
+        self._entities["earth"].shininess = 0.08
         self._entities["sun"] = Entity(
             model="sphere",
             scale=SUN_VIS_RADIUS,
             color=color.rgb(255, 190, 40),
+            unlit=True,
         )
-        self._entities["sun_ray"] = Entity(model=Mesh(vertices=[Vec3(0, 0, 0), Vec3(1, 0, 0)], mode="line"), color=color.yellow)
+        self._entities["sun_glow_outer"] = Entity(
+            model="sphere",
+            scale=SUN_VIS_RADIUS * 2.6,
+            color=color.rgba(255, 170, 35, 55),
+            unlit=True,
+            add_to_scene_entities=False,
+        )
+        self._entities["sun_glow_inner"] = Entity(
+            model="sphere",
+            scale=SUN_VIS_RADIUS * 1.55,
+            color=color.rgba(255, 230, 90, 95),
+            unlit=True,
+            add_to_scene_entities=False,
+        )
+        self._build_target_stars()
 
         self._entities["spacecraft"] = Entity()
         self._build_spacecraft_entity(self._entities["spacecraft"])
+        # Do not force a color on the empty spacecraft parent. A parent-level
+        # color render attribute is inherited by children in Panda3D and can
+        # wash out individually colored satellite parts. Each child part gets
+        # its own forced flat color in _build_spacecraft_entity().
         self._entities["goal_frame"] = Entity(enabled=self._data.goal_quaternions_wxyz is not None)
         self._build_frame(self._entities["goal_frame"], scale=0.9, alpha=0.45)
 
@@ -208,53 +253,241 @@ class UrsinaSpacecraftVisualizer:
         )
         self._entities["hud"] = Text(
             text="",
-            origin=(-0.5, 0.5),
-            position=(-0.86, 0.46),
+            origin=(-0.5, -0.5),
+            position=(-0.86, -0.47),
             scale=0.8,
             color=Color(0.9, 0.95, 1.0, 1.0),
         )
 
-        AmbientLight(color=Color(0.35, 0.35, 0.4, 1.0))
-        sun_light = DirectionalLight()
-        sun_light.look_at(Vec3(-1, -1, -1))
+        AmbientLight(color=Color(0.10, 0.10, 0.12, 1.0))
+        sun_light = DirectionalLight(color=Color(0.55, 0.52, 0.48, 1.0))
+        sun_light.position = self._entities["sun"].position
+        sun_light.look_at(Vec3(0, 0, 0))
         self._entities["sun_light"] = sun_light
+        point_light = PointLight(color=Color(0.35, 0.28, 0.18, 1.0))
+        point_light.position = self._entities["sun"].position
+        self._entities["sun_point_light"] = point_light
+
+    def _build_target_stars(self) -> None:
+        from ursina import Entity, Text, Vec3, color
+
+        if self._target_dirs is None:
+            return
+
+        stars = []
+        labels = []
+        for index, direction in enumerate(self._target_dirs):
+            position = _unit(direction) * TARGET_STAR_DISTANCE
+            pos_vec = Vec3(float(position[0]), float(position[1]), float(position[2]))
+            star = Entity(
+                model="circle",
+                position=pos_vec,
+                scale=TARGET_STAR_RADIUS,
+                color=color.rgb(255, 35, 210),
+                billboard=True,
+                unlit=True,
+            )
+            label_offset = _target_label_offset(direction) * TARGET_STAR_RADIUS * 1.7
+            label_pos = position + label_offset
+            label = Text(
+                text=str(index),
+                position=Vec3(float(label_pos[0]), float(label_pos[1]), float(label_pos[2])),
+                origin=(0, 0),
+                scale=1.0,
+                color=color.rgb(255, 185, 245),
+                billboard=True,
+            )
+            labels.append(label)
+            stars.append(star)
+        self._entities["target_stars"] = stars
+        self._entities["target_star_labels"] = labels
 
     def _build_spacecraft_entity(self, parent: Any) -> None:
-        from ursina import Entity, color
+        """Build a high-contrast spacecraft model with forced flat colors.
 
-        Entity(parent=parent, model="cube", scale=(SPACECRAFT_VIS_SIZE, SPACECRAFT_VIS_SIZE * 0.55, SPACECRAFT_VIS_SIZE * 0.35), color=color.gray)
-        Entity(parent=parent, model="cube", x=SPACECRAFT_VIS_SIZE * 0.95, scale=(SPACECRAFT_VIS_SIZE * 0.45, SPACECRAFT_VIS_SIZE * 0.18, SPACECRAFT_VIS_SIZE * 0.18), color=color.red)
-        Entity(parent=parent, model="cube", y=SPACECRAFT_VIS_SIZE * 0.9, scale=(SPACECRAFT_VIS_SIZE * 0.12, SPACECRAFT_VIS_SIZE * 1.3, SPACECRAFT_VIS_SIZE * 0.45), color=color.azure)
-        Entity(parent=parent, model="cube", y=-SPACECRAFT_VIS_SIZE * 0.9, scale=(SPACECRAFT_VIS_SIZE * 0.12, SPACECRAFT_VIS_SIZE * 1.3, SPACECRAFT_VIS_SIZE * 0.45), color=color.azure)
-        Entity(parent=parent, model="cube", x=SPACECRAFT_VIS_SIZE * 1.65, scale=(SPACECRAFT_VIS_SIZE * 1.8, SPACECRAFT_VIS_SIZE * 0.05, SPACECRAFT_VIS_SIZE * 0.05), color=color.red)
-        self._build_frame(parent, scale=0.75, alpha=1.0)
+        This version avoids Ursina's built-in ``cube`` primitive for the
+        spacecraft parts because, on some Linux/OpenGL/Ursina combinations, the
+        default primitive material can render as mostly white even when a color
+        is supplied.  Each spacecraft component is instead a small custom mesh
+        whose Panda3D node color, color-scale, texture state, material state,
+        and lighting state are explicitly forced.
+        """
+        from ursina import Entity, Mesh, Vec3
+
+        def flat_box(
+            center: tuple[float, float, float],
+            size: tuple[float, float, float],
+            rgba: tuple[int, int, int, int],
+        ) -> Any:
+            cx, cy, cz = center
+            sx, sy, sz = size[0] / 2.0, size[1] / 2.0, size[2] / 2.0
+            vertices = [
+                Vec3(cx - sx, cy - sy, cz - sz),
+                Vec3(cx + sx, cy - sy, cz - sz),
+                Vec3(cx + sx, cy + sy, cz - sz),
+                Vec3(cx - sx, cy + sy, cz - sz),
+                Vec3(cx - sx, cy - sy, cz + sz),
+                Vec3(cx + sx, cy - sy, cz + sz),
+                Vec3(cx + sx, cy + sy, cz + sz),
+                Vec3(cx - sx, cy + sy, cz + sz),
+            ]
+            triangles = [
+                (0, 1, 2), (0, 2, 3),  # -Z
+                (4, 6, 5), (4, 7, 6),  # +Z
+                (0, 4, 5), (0, 5, 1),  # -Y
+                (3, 2, 6), (3, 6, 7),  # +Y
+                (1, 5, 6), (1, 6, 2),  # +X
+                (0, 3, 7), (0, 7, 4),  # -X
+            ]
+            entity = Entity(parent=parent, model=Mesh(vertices=vertices, triangles=triangles), texture=None)
+            _force_flat_entity_color(entity, rgba)
+            return entity
+
+        def flat_disc(
+            center: tuple[float, float, float],
+            radius: float,
+            rgba: tuple[int, int, int, int],
+            segments: int = 24,
+        ) -> Any:
+            # Disc lies in the local XY plane at constant Z.
+            cx, cy, cz = center
+            vertices = [Vec3(cx, cy, cz)]
+            for i in range(segments):
+                angle = 2.0 * np.pi * i / segments
+                vertices.append(Vec3(cx + radius * np.cos(angle), cy + radius * np.sin(angle), cz))
+            triangles = [(0, i, 1 + (i % segments)) for i in range(1, segments + 1)]
+            entity = Entity(parent=parent, model=Mesh(vertices=vertices, triangles=triangles), texture=None)
+            _force_flat_entity_color(entity, rgba)
+            return entity
+
+        def flat_line(points: list[tuple[float, float, float]], rgba: tuple[int, int, int, int]) -> Any:
+            entity = Entity(
+                parent=parent,
+                model=Mesh(vertices=[Vec3(*point) for point in points], mode="line"),
+                texture=None,
+            )
+            _force_flat_entity_color(entity, rgba)
+            return entity
+
+        s = SPACECRAFT_VIS_SIZE
+
+        # Main matte graphite spacecraft bus: dark enough for contrast, but
+        # not pure black, so body attitude and shape remain readable.
+        flat_box((0.0, 0.0, 0.0), (s * 1.08, s * 0.72, s * 0.54), (16, 20, 27, 255))
+
+        # Six thin matte skin plates sit slightly outside the bus.  They create
+        # a readable silhouette and give each face a slightly different shade.
+        skin_t = s * 0.018
+        flat_box((s * 0.552, 0.0, 0.0), (skin_t, s * 0.75, s * 0.57), (32, 38, 48, 255))      # +X face
+        flat_box((-s * 0.552, 0.0, 0.0), (skin_t, s * 0.75, s * 0.57), (8, 10, 14, 255))       # -X face
+        flat_box((0.0, s * 0.372, 0.0), (s * 1.10, skin_t, s * 0.57), (18, 27, 38, 255))      # +Y face
+        flat_box((0.0, -s * 0.372, 0.0), (s * 1.10, skin_t, s * 0.57), (18, 27, 38, 255))     # -Y face
+        flat_box((0.0, 0.0, s * 0.282), (s * 1.10, s * 0.75, skin_t), (24, 29, 37, 255))      # +Z face
+        flat_box((0.0, 0.0, -s * 0.282), (s * 1.10, s * 0.75, skin_t), (5, 6, 9, 255))        # -Z face
+
+        # Muted bronze/gold MLI-style front equipment blanket on body +X.
+        # Kept warm but not pale, so it does not blow out to white.
+        flat_box((s * 0.64, 0.0, 0.0), (s * 0.24, s * 0.76, s * 0.58), (150, 82, 20, 255))
+
+        # Dark radiator/back face on body -X.
+        flat_box((-s * 0.64, 0.0, 0.0), (s * 0.14, s * 0.62, s * 0.46), (0, 0, 0, 255))
+
+        # Forward sensor/boresight housing and black lens.
+        flat_box((s * 0.86, 0.0, 0.0), (s * 0.42, s * 0.24, s * 0.24), (92, 34, 22, 255))
+        flat_box((s * 1.10, 0.0, 0.0), (s * 0.08, s * 0.18, s * 0.18), (0, 0, 0, 255))
+
+        # Solar array booms.
+        flat_box((0.0, s * 0.78, 0.0), (s * 0.18, s * 0.62, s * 0.07), (72, 78, 82, 255))
+        flat_box((0.0, -s * 0.78, 0.0), (s * 0.18, s * 0.62, s * 0.07), (72, 78, 82, 255))
+
+        # Solar arrays: deep blue surfaces with pale grid lines.
+        for panel_y in (s * 1.35, -s * 1.35):
+            flat_box((0.0, panel_y, 0.0), (s * 2.25, s * 0.82, s * 0.035), (3, 18, 76, 255))
+            for offset in (-0.75, -0.25, 0.25, 0.75):
+                flat_box((s * offset, panel_y, s * 0.03), (s * 0.018, s * 0.84, s * 0.018), (86, 155, 220, 255))
+            for offset in (-0.25, 0.0, 0.25):
+                flat_box((0.0, panel_y + s * offset, s * 0.032), (s * 2.25, s * 0.014, s * 0.018), (86, 155, 220, 255))
+
+        # A small high-gain antenna on the +Z deck.  Made from a disc mesh, not
+        # a built-in circle, so its color is also forced.
+        flat_box((0.0, 0.0, s * 0.35), (s * 0.08, s * 0.08, s * 0.24), (78, 82, 76, 255))
+        flat_disc((0.0, 0.0, s * 0.50), s * 0.23, (78, 82, 76, 255))
+
+        # Add body axes cues on the bus itself: red +X, green +Y, blue +Z.
+        flat_box((s * 0.42, 0.0, s * 0.31), (s * 0.42, s * 0.035, s * 0.035), (235, 48, 42, 255))
+        flat_box((0.0, s * 0.32, s * 0.31), (s * 0.035, s * 0.32, s * 0.035), (50, 190, 82, 255))
+        flat_box((0.0, 0.0, s * 0.43), (s * 0.035, s * 0.035, s * 0.28), (72, 120, 235, 255))
+
+        # Body +X forward/boresight ray.  Bright red and forced flat.
+        flat_line([(0.0, 0.0, 0.0), (BODY_FORWARD_RAY_LENGTH, 0.0, 0.0)], (255, 0, 0, 255))
 
     def _build_frame(self, parent: Any, scale: float, alpha: float) -> None:
         from ursina import Entity, color
 
         Entity(parent=parent, model="cube", x=scale / 2, scale=(scale, 0.025, 0.025), color=color.rgba(255, 0, 0, int(255 * alpha)))
-        Entity(parent=parent, model="cube", y=scale / 2, scale=(0.025, scale, 0.025), color=color.rgba(0, 255, 0, int(255 * alpha)))
-        Entity(parent=parent, model="cube", z=scale / 2, scale=(0.025, 0.025, scale), color=color.rgba(0, 90, 255, int(255 * alpha)))
 
     def _update(self) -> None:
-        from ursina import held_keys, mouse, time
+        from ursina import mouse, time
 
         if self._playing and self._data is not None:
             self._frame_accumulator += time.dt * self._fps * self.playback_speed
             if self._frame_accumulator >= 1.0:
                 step = int(self._frame_accumulator)
                 self._frame_accumulator -= step
-                self._apply_frame(min(self._frame_index + step, self.frame_count - 1))
-                if self._frame_index >= self.frame_count - 1:
-                    self._playing = False
+                self._apply_frame((self._frame_index + step) % self.frame_count)
 
-        if held_keys["left mouse"] or held_keys["right mouse"]:
+        # Do not derive drag state from held_keys here. In Ursina, mouse
+        # button state is synthesized from down/up events; if the "up" event is
+        # missed after a click or focus change, held_keys["left mouse"] can stay
+        # truthy and the camera appears to "stick" to the cursor.  Drag state is
+        # instead started/stopped in _input(), with this physical-button check as
+        # a safety net.
+        if self._body_forward_camera:
+            self._camera_dragging = False
+        elif self._camera_dragging and not self._is_left_mouse_down():
+            self._camera_dragging = False
+
+        if self._camera_dragging:
             self._camera_yaw_deg += mouse.velocity[0] * 160.0
             self._camera_pitch_deg = float(np.clip(self._camera_pitch_deg - mouse.velocity[1] * 160.0, -85.0, 85.0))
         self._update_camera()
 
+    def _is_left_mouse_down(self) -> bool:
+        """Return the current physical left-button state when available.
+
+        Ursina exposes ``mouse.left`` and also runs on Panda3D, whose
+        MouseWatcher can query the current hardware button state.  Checking the
+        current state prevents a missed "left mouse up" event from leaving the
+        camera in drag mode indefinitely.
+        """
+        try:
+            from panda3d.core import MouseButton  # type: ignore[import-not-found]
+            from ursina import application  # type: ignore[import-not-found]
+
+            base = getattr(application, "base", None)
+            watcher = getattr(base, "mouseWatcherNode", None)
+            if watcher is not None:
+                return bool(watcher.is_button_down(MouseButton.one()))
+        except Exception:
+            pass
+
+        try:
+            from ursina import mouse  # type: ignore[import-not-found]
+
+            return bool(getattr(mouse, "left", False))
+        except Exception:
+            return False
+
     def _input(self, key: str) -> None:
-        if key == "space":
+        if key == "left mouse down":
+            self._camera_dragging = True
+        elif key == "left mouse up":
+            self._camera_dragging = False
+        elif key in {"escape", "window focus lost"}:
+            # Defensive reset for platforms/IDEs where a release event can be
+            # swallowed when the cursor leaves the window or focus changes.
+            self._camera_dragging = False
+        elif key == "space":
             self._playing = not self._playing
         elif key == "right arrow":
             self._playing = False
@@ -278,7 +511,11 @@ class UrsinaSpacecraftVisualizer:
             self.playback_speed *= 1.25
         elif key in {"-", "numpad -"}:
             self.playback_speed = max(0.1, self.playback_speed / 1.25)
+        elif key == "f":
+            self._body_forward_camera = not self._body_forward_camera
+            self._camera_dragging = False
         elif key == "r":
+            self._body_forward_camera = False
             self._camera_yaw_deg = 35.0
             self._camera_pitch_deg = 22.0
             self._camera_distance = CAMERA_DEFAULT_DISTANCE
@@ -294,30 +531,72 @@ class UrsinaSpacecraftVisualizer:
 
         spacecraft = self._entities["spacecraft"]
         spacecraft.position = Vec3(float(pos[0]), float(pos[1]), float(pos[2]))
-        spacecraft.rotation = _ursina_euler_from_quat_wxyz(quat)
+        _apply_attitude_to_entity(spacecraft, quat)
 
         if self._data.goal_quaternions_wxyz is not None:
             goal = self._entities["goal_frame"]
             goal.position = spacecraft.position
-            goal.rotation = _ursina_euler_from_quat_wxyz(self._data.goal_quaternions_wxyz[self._frame_index])
+            _apply_attitude_to_entity(goal, self._data.goal_quaternions_wxyz[self._frame_index])
 
         sun_dir = self._sun_direction_for_frame(self._frame_index)
         self._set_sun(sun_dir)
         self._update_hud()
 
     def _set_sun(self, sun_dir: np.ndarray) -> None:
-        from ursina import Mesh, Vec3
+        from ursina import Vec3
 
         sun_pos = _unit(sun_dir) * SUN_VIS_DISTANCE
-        self._entities["sun"].position = Vec3(float(sun_pos[0]), float(sun_pos[1]), float(sun_pos[2]))
-        self._entities["sun_ray"].model = Mesh(vertices=[Vec3(0, 0, 0), Vec3(float(sun_pos[0]), float(sun_pos[1]), float(sun_pos[2]))], mode="line")
+        sun_vec = Vec3(float(sun_pos[0]), float(sun_pos[1]), float(sun_pos[2]))
+        self._entities["sun"].position = sun_vec
+        self._entities["sun_glow_outer"].position = sun_vec
+        self._entities["sun_glow_inner"].position = sun_vec
+        self._entities["sun_point_light"].position = sun_vec
+        self._entities["sun_light"].position = sun_vec
+        self._entities["sun_light"].look_at(Vec3(0, 0, 0))
 
     def _update_camera(self) -> None:
         from ursina import Vec3, camera
 
+        if "spacecraft" in self._entities:
+            spacecraft_pos = self._entities["spacecraft"].position
+            self._camera_target = np.array([float(spacecraft_pos.x), float(spacecraft_pos.y), float(spacecraft_pos.z)], dtype=float)
+
+        if self._body_forward_camera:
+            cam_pos, look_target = self._body_forward_camera_pose()
+        else:
+            direction = self._camera_orbit_direction()
+            cam_pos = self._camera_target + direction * self._camera_distance
+            look_target = self._camera_target
+
+        camera.position = Vec3(float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2]))
+        camera.look_at(Vec3(float(look_target[0]), float(look_target[1]), float(look_target[2])))
+
+    def _body_forward_camera_pose(self) -> tuple[np.ndarray, np.ndarray]:
+        """Return camera position and look target for body-forward view.
+
+        The camera is rigidly offset from the spacecraft in body coordinates,
+        sitting just behind and above the body +X axis while looking down that
+        +X/body-forward direction.  This makes the red body-forward ray behave
+        like a boresight/aiming reference.
+        """
+        assert self._data is not None
+        quat = self._data.quaternions_wxyz[self._frame_index]
+        rotation = _attitude_rotation_from_quat_wxyz(quat)
+        forward = _unit(rotation.apply(BODY_FORWARD_VEC3))
+        body_up = _unit(rotation.apply(np.array([0.0, 0.0, 1.0], dtype=float)))
+
+        cam_pos = (
+            self._camera_target
+            - forward * BODY_FORWARD_CAMERA_BACK_OFFSET
+            + body_up * BODY_FORWARD_CAMERA_UP_OFFSET
+        )
+        look_target = self._camera_target + forward * BODY_FORWARD_CAMERA_LOOK_AHEAD
+        return cam_pos, look_target
+
+    def _camera_orbit_direction(self) -> np.ndarray:
         yaw = np.deg2rad(self._camera_yaw_deg)
         pitch = np.deg2rad(self._camera_pitch_deg)
-        direction = np.array(
+        return np.array(
             [
                 np.cos(pitch) * np.cos(yaw),
                 np.sin(pitch),
@@ -325,9 +604,6 @@ class UrsinaSpacecraftVisualizer:
             ],
             dtype=float,
         )
-        cam_pos = self._camera_target + direction * self._camera_distance
-        camera.position = Vec3(float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2]))
-        camera.look_at(Vec3(float(self._camera_target[0]), float(self._camera_target[1]), float(self._camera_target[2])))
 
     def _update_hud(self) -> None:
         assert self._data is not None
@@ -335,10 +611,13 @@ class UrsinaSpacecraftVisualizer:
         if self._data.times_s is not None:
             time_text = f"t={self._data.times_s[self._frame_index]:.1f}s  "
         state = "PLAY" if self._playing else "PAUSE"
+        camera_mode = "BODY-FWD" if self._body_forward_camera else "ORBIT"
         self._entities["hud"].text = (
             f"{state}  frame {self._frame_index + 1}/{self.frame_count}  "
-            f"{time_text}speed={self.playback_speed:.2f}x\n"
-            "Space play/pause | ←/→ step | PgUp/PgDn skip | mouse drag orbit | wheel zoom"
+            f"{time_text}speed={self.playback_speed:.2f}x  camera={camera_mode}  "
+            f"quat={ATTITUDE_BODY_TO_WORLD}\n"
+            "Space play/pause | Left/Right step | PgUp/PgDn skip | left mouse drag orbit | "
+            "wheel zoom | F body-forward | R reset"
         )
 
     def _scaled_positions(self) -> np.ndarray:
@@ -462,7 +741,165 @@ def _downsample_data(data: ClosedLoopVizData, every_n: int) -> ClosedLoopVizData
     )
 
 
-def _ursina_euler_from_quat_wxyz(quaternion_wxyz: np.ndarray) -> tuple[float, float, float]:
+def _targets_to_unit_vectors(targets: Any) -> np.ndarray:
+    """Convert target table rows with RA/Dec or x/y/z columns to ECI unit vectors."""
+    if all(column in targets for column in ("x", "y", "z")):
+        vectors = targets[["x", "y", "z"]].to_numpy(float)
+    elif all(column in targets for column in ("RA", "Dec")):
+        ra = np.asarray(targets["RA"], dtype=float)
+        dec = np.asarray(targets["Dec"], dtype=float)
+        vectors = np.column_stack(
+            [
+                np.cos(dec) * np.cos(ra),
+                np.cos(dec) * np.sin(ra),
+                np.sin(dec),
+            ]
+        )
+    else:
+        array = np.asarray(targets, dtype=float)
+        if array.ndim != 2 or array.shape[1] != 3:
+            raise ValueError("targets must include RA/Dec columns, x/y/z columns, or have shape (N, 3)")
+        vectors = array
+
+    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+    if np.any(norms == 0.0) or not np.isfinite(norms).all():
+        raise ValueError("target vectors must be finite and non-zero")
+    return vectors / norms
+
+
+def _target_label_offset(direction: np.ndarray) -> np.ndarray:
+    """Return a stable tangent-space offset for a label beside a target marker."""
+    unit_dir = _unit(np.asarray(direction, dtype=float))
+    reference = np.array([0.0, 1.0, 0.0], dtype=float)
+    tangent = np.cross(unit_dir, reference)
+    if np.linalg.norm(tangent) < 1.0e-6:
+        reference = np.array([1.0, 0.0, 0.0], dtype=float)
+        tangent = np.cross(unit_dir, reference)
+    return _unit(tangent)
+
+
+def _create_earth_texture() -> Any:
+    """Create a small procedural blue/green Earth texture for Ursina."""
+    from PIL import Image
+    from ursina import Texture
+
+    width = EARTH_TEXTURE_SIZE * 2
+    height = EARTH_TEXTURE_SIZE
+    yy, xx = np.mgrid[0:height, 0:width]
+    lon = (xx / width) * 2.0 * np.pi - np.pi
+    lat = np.pi / 2.0 - (yy / height) * np.pi
+
+    land_signal = (
+        0.58 * np.sin(2.5 * lon + 1.3 * np.sin(3.0 * lat))
+        + 0.32 * np.sin(5.5 * lon - 2.0 * lat)
+        + 0.22 * np.cos(9.0 * lon + 4.0 * lat)
+        + 0.16 * np.sin(13.0 * lon - 1.5 * np.cos(5.0 * lat))
+    )
+    polar_ice = np.abs(lat) > np.deg2rad(70.0)
+    land = land_signal > 0.24
+    coast = np.abs(land_signal - 0.24) < 0.045
+
+    ocean = np.stack(
+        [
+            12.0 + 20.0 * np.cos(lat) ** 2,
+            70.0 + 45.0 * np.cos(lat) ** 2,
+            150.0 + 65.0 * np.cos(lat) ** 2,
+        ],
+        axis=-1,
+    )
+    terrain = np.stack(
+        [
+            30.0 + 42.0 * np.cos(lat) ** 2,
+            112.0 + 75.0 * np.cos(lat) ** 2,
+            45.0 + 32.0 * np.cos(lat) ** 2,
+        ],
+        axis=-1,
+    )
+    texture = np.where(land[..., None], terrain, ocean)
+    texture = np.where(coast[..., None], np.array([190.0, 205.0, 105.0]), texture)
+    texture = np.where(polar_ice[..., None], np.array([225.0, 240.0, 255.0]), texture)
+
+    cloud_signal = np.sin(10.0 * lon + 6.0 * np.sin(lat)) + np.cos(7.5 * lon - 3.0 * lat)
+    clouds = (cloud_signal > 1.2) & (~polar_ice)
+    texture = np.where(clouds[..., None], texture * 0.72 + np.array([255.0, 255.0, 255.0]) * 0.28, texture)
+
+    specular_highlight = 0.12 * (1.0 - land.astype(float)) * np.cos(lat) ** 2
+    texture = texture + specular_highlight[..., None] * np.array([90.0, 125.0, 180.0])
+    image = Image.fromarray(np.clip(texture, 0, 255).astype(np.uint8), mode="RGB")
+    return Texture(image)
+
+
+
+def _force_flat_entity_color(entity: Any, rgba: tuple[int, int, int, int]) -> None:
+    """Force a flat, non-reflective color on an Ursina/Panda3D node.
+
+    This uses high render-state priority so inherited lights, textures,
+    materials, shaders, or color scales cannot override spacecraft colors.
+    """
+    from ursina import color
+
+    r, g, b, a = rgba
+    rf, gf, bf, af = r / 255.0, g / 255.0, b / 255.0, a / 255.0
+    entity.color = color.rgba(r, g, b, a)
+    entity.unlit = True
+    entity.texture = None
+    entity.shininess = 0.0
+
+    priority = 1000
+    # Turn off anything that can make a matte color blow out to white.
+    for method_name in ("setTextureOff", "setMaterialOff", "setLightOff", "setShaderOff"):
+        try:
+            getattr(entity, method_name)(priority)
+        except Exception:
+            pass
+
+    try:
+        entity.clearColorScale()
+    except Exception:
+        pass
+    try:
+        entity.setColor(rf, gf, bf, af, priority)
+    except Exception:
+        try:
+            entity.setColor(rf, gf, bf, af)
+        except Exception:
+            pass
+    # ColorScale multiplies the base color; leave it neutral rather than
+    # tinting again.  This avoids inherited or accidental overbright scales.
+    try:
+        entity.setColorScale(1.0, 1.0, 1.0, 1.0, priority)
+    except Exception:
+        try:
+            entity.setColorScale(1.0, 1.0, 1.0, 1.0)
+        except Exception:
+            pass
+
+    # Also force every child NodePath in case Ursina wraps the mesh under the
+    # Entity node on this platform/version.
+    try:
+        for child in entity.getChildren():
+            for method_name in ("setTextureOff", "setMaterialOff", "setLightOff", "setShaderOff"):
+                try:
+                    getattr(child, method_name)(priority)
+                except Exception:
+                    pass
+            try:
+                child.clearColorScale()
+            except Exception:
+                pass
+            try:
+                child.setColor(rf, gf, bf, af, priority)
+            except Exception:
+                pass
+            try:
+                child.setColorScale(1.0, 1.0, 1.0, 1.0, priority)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _rotation_from_quat_wxyz(quaternion_wxyz: np.ndarray) -> Rotation:
     q = np.asarray(quaternion_wxyz, dtype=float)
     if q.shape != (4,):
         raise ValueError(f"Expected quaternion shape (4,), got {q.shape}.")
@@ -470,7 +907,29 @@ def _ursina_euler_from_quat_wxyz(quaternion_wxyz: np.ndarray) -> tuple[float, fl
     if norm == 0 or not np.isfinite(norm):
         raise ValueError("Quaternion must be finite and non-zero.")
     w, x, y, z = q / norm
-    return tuple(float(v) for v in Rotation.from_quat([x, y, z, w]).as_euler("xyz", degrees=True))
+    return Rotation.from_quat([x, y, z, w])
+
+
+def _attitude_rotation_from_quat_wxyz(quaternion_wxyz: np.ndarray) -> Rotation:
+    """Return the body-to-world attitude rotation used by both model and camera."""
+    return _rotation_from_quat_wxyz(quaternion_wxyz)
+
+
+def _apply_attitude_to_entity(entity: Any, quaternion_wxyz: np.ndarray) -> None:
+    """Apply spacecraft attitude directly as a Panda3D quaternion.
+
+    This intentionally avoids converting through ``Entity.rotation`` Euler
+    angles. Euler conversion can introduce order/sign ambiguity and can make the
+    rendered spacecraft disagree with the body-forward camera.  The same
+    body-to-world ``Rotation`` produced here is also used in
+    ``_body_forward_camera_pose()``, so the red +X body-forward ray, model, and
+    camera all share one attitude source of truth.
+    """
+    from panda3d.core import Quat  # type: ignore[import-not-found]
+
+    rotation = _attitude_rotation_from_quat_wxyz(quaternion_wxyz)
+    x, y, z, w = rotation.as_quat()
+    entity.setQuat(Quat(float(w), float(x), float(y), float(z)))
 
 
 def _coerce_datetime(epoch: object) -> datetime:
