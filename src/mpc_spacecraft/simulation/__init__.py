@@ -1,19 +1,21 @@
 """Simulation module for closed-loop control."""
 
-from .closed_loop_testing import (
+from mpc_spacecraft.config import (
     ClosedLoopEnvironmentConfig,
-    ClosedLoopLogRecord,
     ClosedLoopMPCConfig,
     ClosedLoopTestConfig,
-    ClosedLoopTestResult,
     ClosedLoopTimingConfig,
     InitialStateConfig,
     SensorScheduleConfig,
     SpacecraftPhysicalConfig,
     TargetConfig,
+)
+
+from .closed_loop_testing import (
+    ClosedLoopLogRecord,
+    ClosedLoopTestResult,
     run_closed_loop_test,
 )
-from .scenarios import ScenarioGenerator, create_reference_trajectory
 
 __all__ = [
     "ClosedLoopEnvironmentConfig",
@@ -27,6 +29,4 @@ __all__ = [
     "SpacecraftPhysicalConfig",
     "TargetConfig",
     "run_closed_loop_test",
-    "ScenarioGenerator",
-    "create_reference_trajectory",
 ]

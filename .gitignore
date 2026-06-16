@@ -69,3 +69,4 @@ Thumbs.db
 *.bak
 *.bsp
 
+.pytest_cache/
