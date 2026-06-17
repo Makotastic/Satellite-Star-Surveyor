@@ -61,7 +61,7 @@ Satellite-Star-Surveyor/
 ├── src/mpc_spacecraft/
 │   ├── analysis/          # Analysis utilities and experiment helpers
 │   ├── config/            # Configuration files and packaged config data
-│   ├── controllers/       # MPC, LQR, and error-state dynamics adapters
+│   ├── controllers/       # MPC and error-state dynamics adapters
 │   ├── dynamics/          # Spacecraft dynamics and disturbance models
 │   ├── estimation/        # MEKF, sensor models, and estimated state types
 │   ├── guidance/          # Guidance logic and Sun direction models
