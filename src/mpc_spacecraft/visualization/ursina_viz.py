@@ -22,6 +22,7 @@ from mpc_spacecraft.utilities.utils import BODY_FORWARD_VEC3, R_EARTH_M
 
 
 DEFAULT_POSITION_SCALE = 1.0e-6
+DEFAULT_ANTIALIAS_SAMPLES = 4
 SPACECRAFT_VIS_SIZE = 0.45
 SUN_VIS_DISTANCE = 45.0
 SUN_VIS_RADIUS = 2.0
@@ -67,11 +68,13 @@ class UrsinaSpacecraftVisualizer:
     def __init__(
         self,
         position_scale: float = DEFAULT_POSITION_SCALE,
+        antialias_samples: int = DEFAULT_ANTIALIAS_SAMPLES,
         playback_speed: float = 1.0,
         skip_frames: int = 25,
         window_title: str = "MPC Spacecraft Ursina Visualizer",
     ) -> None:
         self.position_scale = float(position_scale)
+        self.antialias_samples = max(0, int(antialias_samples))
         self.playback_speed = float(playback_speed)
         self.skip_frames = max(1, int(skip_frames))
         self.window_title = window_title
@@ -155,6 +158,9 @@ class UrsinaSpacecraftVisualizer:
         from panda3d.core import loadPrcFileData  # type: ignore[import-not-found]
 
         loadPrcFileData("", "audio-library-name null")
+        if self.antialias_samples > 0:
+            loadPrcFileData("", "framebuffer-multisample 1")
+            loadPrcFileData("", f"multisamples {self.antialias_samples}")
         import __main__
 
         from ursina import Ursina, application, camera, window

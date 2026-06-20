@@ -67,7 +67,7 @@ class GNSSConfig:
 
 
 # Star tracker measurement noise (1-sigma)
-_sigma_st = 5.0 * ARCSEC_TO_RAD  # 5 arcsec in radians
+_sigma_st = 1.0 * ARCSEC_TO_RAD  # 1 arcsec in radians
 
 
 @dataclass(frozen=True)

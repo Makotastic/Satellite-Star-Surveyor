@@ -16,9 +16,9 @@ from mpc_spacecraft.utilities.utils import FloatArray, FullSimState
 class ClosedLoopTimingConfig:
     """Timing parameters for a closed-loop test."""
 
-    sim_dt: float = 0.1
-    mpc_dt: float = 1.0
-    sim_cycles: int = 6_000
+    sim_dt: float = 0.01
+    mpc_dt: float = 5
+    sim_cycles: int = 120_000
     start_epoch_utc: datetime = field(default_factory=lambda: datetime(2025, 1, 9))
 
 
@@ -28,28 +28,37 @@ class ClosedLoopEnvironmentConfig:
 
     sun_keep_out_deg: float = 35.0
     earth_margin_deg: float = 10.0
-    disturbance_bias: FloatArray | None = field(
-        default_factory=lambda: np.array([2.0e-6, -1.0e-6, 1.0e-6], dtype=np.float64)
-    )
-    disturbance_noise_std: float | None = 5.0e-7
-    disturbance_sinusoidal_amplitude: float | None = 2.0e-6
-    disturbance_sinusoidal_frequency: float | None = 0.01
-    enable_gravity: bool = True
 
+    # Unmodeled constant disturbance torque, N·m.
+    disturbance_bias: FloatArray | None = field(
+        default_factory=lambda: np.array([5.0e-6, -3.0e-6, 2.0e-6], dtype=np.float64)
+    )
+
+    # Low-frequency random torque, N·m RMS.
+    disturbance_noise_std: float | None = 1.0e-7
+
+    # Slow deterministic disturbance, mostly SRP / thermal / orbit geometry.
+    disturbance_sinusoidal_amplitude: float | None = 5.0e-6
+
+    # Environmental disturbance frequency, Hz.
+    # 3e-4 Hz ≈ 55.6 min period.
+    disturbance_sinusoidal_frequency: float | None = 3.0e-4
+
+    enable_gravity: bool = True
 
 @dataclass(frozen=True)
 class SpacecraftPhysicalConfig:
-    """Spacecraft physical parameters for closed-loop testing.
-
-    The mass remains representative of a medium space telescope, but the default
-    inertia is intentionally scaled down by roughly 10x from a full observatory
-    model so end-to-end closed-loop functionality can be exercised without long
-    settling simulations. Use ``medium_space_telescope()`` when you want the
-    slower, more realistic inertia values.
-    """
+    """Spacecraft physical parameters for closed-loop testing."""
 
     inertia: FloatArray = field(
-        default_factory=lambda: np.diag([260.0, 240.0, 150.0]).astype(np.float64)
+        default_factory=lambda: np.array(
+            [
+                [2600.0, -120.0,   80.0],
+                [-120.0, 2400.0,  -60.0],
+                [  80.0,  -60.0, 1500.0],
+            ],
+            dtype=np.float64,
+        )
     )
     mass: float = 1_200.0
     u_min: FloatArray = field(
@@ -59,16 +68,6 @@ class SpacecraftPhysicalConfig:
         default_factory=lambda: 0.25 * np.ones(3, dtype=np.float64)
     )
 
-    @classmethod
-    def medium_space_telescope(cls) -> "SpacecraftPhysicalConfig":
-        """Return slower, more realistic medium space telescope inertia values."""
-        return cls(
-            inertia=np.diag([2_600.0, 2_400.0, 1_500.0]).astype(np.float64),
-            mass=1_200.0,
-            u_min=-0.25 * np.ones(3, dtype=np.float64),
-            u_max=0.25 * np.ones(3, dtype=np.float64),
-        )
-
 
 @dataclass(frozen=True)
 class ClosedLoopMPCConfig:
@@ -77,11 +76,11 @@ class ClosedLoopMPCConfig:
     step_horizon: int = 30
     q_weight: FloatArray = field(
         default_factory=lambda: np.diag(
-            [20.0, 20.0, 20.0, 10.0, 10.0, 10.0]
+            [20.0, 20.0, 20.0, 5.0, 5.0, 5.0]
         ).astype(np.float64)
     )
     r_weight: FloatArray = field(
-        default_factory=lambda: 5.0 * np.eye(3, dtype=np.float64)
+        default_factory=lambda: 1.0 * np.eye(3, dtype=np.float64)
     )
     q_terminal: FloatArray | None = None
 
@@ -90,8 +89,8 @@ class ClosedLoopMPCConfig:
 class SensorScheduleConfig:
     """Sensor sampling schedule used by the estimator simulation."""
 
-    gnss_measurement_period: float = 5.0
-    star_tracker_measurement_period: float = 1.0
+    gnss_measurement_period: float = 1.0
+    star_tracker_measurement_period: float = 0.1
 
 
 @dataclass(frozen=True)
@@ -130,9 +129,9 @@ class TargetConfig:
     targets: pd.DataFrame = field(
         default_factory=lambda: pd.DataFrame(
             {
-                "req_obs_time": [20.0, 20.0, 20.0, 20.0, 20.0],
-                "Dec": [0.174533, -0.349066, 0.610865, 0.087266, -0.785398],
-                "RA": [0.261799, 1.396263, 2.530727, 3.839724, 5.410521],
+                "req_obs_time": [20.0, 20.0, 20.0],
+                "Dec": [0.174533, -0.349066, 0.610865],
+                "RA": [0.261799, 1.396263, 2.530727],
             }
         )
     )

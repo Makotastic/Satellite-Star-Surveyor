@@ -9,6 +9,7 @@ from typing import cast
 
 import numpy as np
 import pandas as pd
+import quaternion as qu
 
 from mpc_spacecraft.config import ClosedLoopTestConfig
 from mpc_spacecraft.controllers import NominalMPC
@@ -25,8 +26,10 @@ from mpc_spacecraft.simulation.state_estimation_sim_handler import (
     StateEstimationSimHandler,
 )
 from mpc_spacecraft.utilities.utils import (
+    BODY_FORWARD_VEC3,
     FloatArray,
     FullSimState,
+    R_EARTH_M,
     RigidBodyState,
     RigidBodyControl,
     RotationState,
@@ -48,8 +51,18 @@ class ClosedLoopLogRecord:
     guidance_mode_name: str
     is_complete: bool
     mpc_updated: bool
+    mpc_solve_success: bool
+    mpc_fallback_used: bool
+    estimator_used_gnss: bool
+    estimator_used_star_tracker: bool
+    mekf_covariance_diag: FloatArray | None
     current_target_idx: int | None
     target_obs_times: FloatArray | None
+    active_target_boresight_angle_deg: float | None = None
+    active_target_sun_angle_deg: float | None = None
+    active_target_earth_angle_deg: float | None = None
+    active_target_sun_keepout_margin_deg: float | None = None
+    active_target_earth_keepout_margin_deg: float | None = None
 
 
 @dataclass
@@ -85,6 +98,25 @@ class ClosedLoopTestResult:
             ),
             "is_complete": np.array([r.is_complete for r in self.records], dtype=bool),
             "mpc_updated": np.array([r.mpc_updated for r in self.records], dtype=bool),
+            "mpc_solve_success": np.array(
+                [r.mpc_solve_success for r in self.records], dtype=bool
+            ),
+            "mpc_fallback_used": np.array(
+                [r.mpc_fallback_used for r in self.records], dtype=bool
+            ),
+            "estimator_used_gnss": np.array(
+                [r.estimator_used_gnss for r in self.records], dtype=bool
+            ),
+            "estimator_used_star_tracker": np.array(
+                [r.estimator_used_star_tracker for r in self.records], dtype=bool
+            ),
+            "mekf_covariance_diag": np.array(
+                [
+                    np.full(15, np.nan) if r.mekf_covariance_diag is None else r.mekf_covariance_diag
+                    for r in self.records
+                ],
+                dtype=np.float64,
+            ),
         }
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -102,11 +134,26 @@ class ClosedLoopTestResult:
                 "guidance_mode": record.guidance_mode_name,
                 "is_complete": record.is_complete,
                 "mpc_updated": record.mpc_updated,
+                "mpc_solve_success": record.mpc_solve_success,
+                "mpc_fallback_used": record.mpc_fallback_used,
+                "estimator_used_gnss": record.estimator_used_gnss,
+                "estimator_used_star_tracker": record.estimator_used_star_tracker,
                 "current_target_idx": record.current_target_idx,
+                "active_target_boresight_angle_deg": record.active_target_boresight_angle_deg,
+                "active_target_sun_angle_deg": record.active_target_sun_angle_deg,
+                "active_target_earth_angle_deg": record.active_target_earth_angle_deg,
+                "active_target_sun_keepout_margin_deg": record.active_target_sun_keepout_margin_deg,
+                "active_target_earth_keepout_margin_deg": record.active_target_earth_keepout_margin_deg,
                 "control_tx": record.control[0],
                 "control_ty": record.control[1],
                 "control_tz": record.control[2],
             }
+            if record.mekf_covariance_diag is not None:
+                for idx, value in enumerate(record.mekf_covariance_diag):
+                    row[f"mekf_cov_diag_{idx:02d}"] = value
+            if record.target_obs_times is not None:
+                for idx, value in enumerate(record.target_obs_times):
+                    row[f"target_{idx}_obs_time"] = value
             _add_vec_columns(row, "true_position", true_state.position)
             _add_vec_columns(row, "true_velocity", true_state.velocity)
             _add_quat_columns(row, "true_quat", true_state.quat)
@@ -183,6 +230,10 @@ def run_closed_loop_test(config: ClosedLoopTestConfig | None = None) -> ClosedLo
     goal_rotation_state = sim_state.rotation.copy()
     mode: IntEnum | None = None
     is_complete = False
+    mpc_solve_success = False
+    mpc_fallback_used = False
+    estimator_used_star_tracker = False
+    estimator_used_gnss = False
 
     iterator = range(timing.sim_cycles)
     if config.show_progress:
@@ -191,27 +242,46 @@ def run_closed_loop_test(config: ClosedLoopTestConfig | None = None) -> ClosedLo
         iterator = tqdm(iterator)
 
     for sim_cycle in iterator:
-        estimated_state = (
-            estimator.tick(clock.current_time, clock.last_dt, sim_state)
-            if clock.last_dt != 0
-            else sim_state.sensor_rigid_body
-        )
+        if clock.last_dt != 0:
+            estimated_state, estimator_used_star_tracker, estimator_used_gnss = estimator.tick(
+                clock.current_time, clock.last_dt, sim_state
+            )
+        else:
+            estimated_state = sim_state.sensor_rigid_body
+            estimator_used_star_tracker = False
+            estimator_used_gnss = False
 
         mpc_update = previous_mpc_guidance_update is None or (
             clock.current_time - previous_mpc_guidance_update >= timing.mpc_dt
         )
         if mpc_update:
+            guidance_delta_time = (
+                0.0
+                if previous_mpc_guidance_update is None
+                else clock.current_time - previous_mpc_guidance_update
+            )
             goal_rotation_state, mode, is_complete = guidance.tick(
-                clock.now(), timing.sim_dt, cast(RigidBodyState, estimated_state.rigid_body)
+                clock.now(), guidance_delta_time, cast(RigidBodyState, estimated_state.rigid_body)
             )
             rotation_control = mpc.get_first_control(
                 x0=estimated_state.rotation,
                 x_goal=goal_rotation_state,
                 current_epoch_utc=clock.now(),
             )
+            mpc_solve_success = bool(mpc.last_solve_success)
+            mpc_fallback_used = bool(mpc.last_fallback_used)
             total_control = RigidBodyControl.zeros()
             total_control.rotation[:] = rotation_control
             previous_mpc_guidance_update = clock.current_time
+
+        active_geometry = _compute_active_target_geometry(
+            true_state=sim_state.rigid_body,
+            target_table=planner._targets,
+            current_target_idx=getattr(planner, "_current_target_idx", None),
+            sun_dir_I=sun_model.sun_dir_eci(clock.now()),
+            sun_keepout_deg=environment.sun_keep_out_deg,
+            earth_margin_deg=environment.earth_margin_deg,
+        )
 
         result.append(
             ClosedLoopLogRecord(
@@ -226,8 +296,18 @@ def run_closed_loop_test(config: ClosedLoopTestConfig | None = None) -> ClosedLo
                 guidance_mode_name=mode.name if mode is not None else "UNKNOWN",
                 is_complete=bool(is_complete),
                 mpc_updated=bool(mpc_update),
+                mpc_solve_success=bool(mpc_solve_success),
+                mpc_fallback_used=bool(mpc_fallback_used),
+                estimator_used_gnss=bool(estimator_used_gnss),
+                estimator_used_star_tracker=bool(estimator_used_star_tracker),
+                mekf_covariance_diag=np.diag(estimator.mekf.P).copy(),
                 current_target_idx=getattr(planner, "_current_target_idx", None),
                 target_obs_times=planner._targets["obs_time"].to_numpy().copy(),
+                active_target_boresight_angle_deg=active_geometry["boresight_angle_deg"],
+                active_target_sun_angle_deg=active_geometry["sun_angle_deg"],
+                active_target_earth_angle_deg=active_geometry["earth_angle_deg"],
+                active_target_sun_keepout_margin_deg=active_geometry["sun_keepout_margin_deg"],
+                active_target_earth_keepout_margin_deg=active_geometry["earth_keepout_margin_deg"],
             )
         )
 
@@ -255,3 +335,44 @@ def _add_quat_columns(row: dict[str, object], prefix: str, values: FloatArray) -
     row[f"{prefix}_x"] = values[1]
     row[f"{prefix}_y"] = values[2]
     row[f"{prefix}_z"] = values[3]
+
+
+def _compute_active_target_geometry(
+    true_state: RigidBodyState,
+    target_table: pd.DataFrame,
+    current_target_idx: int | None,
+    sun_dir_I: FloatArray,
+    sun_keepout_deg: float,
+    earth_margin_deg: float,
+) -> dict[str, float | None]:
+    """Compute active target pointing and keepout geometry for logging."""
+    empty = {
+        "boresight_angle_deg": None,
+        "sun_angle_deg": None,
+        "earth_angle_deg": None,
+        "sun_keepout_margin_deg": None,
+        "earth_keepout_margin_deg": None,
+    }
+    if current_target_idx is None or current_target_idx not in target_table.index:
+        return empty
+
+    target_vec = target_table.loc[current_target_idx][["x", "y", "z"]].to_numpy(dtype=np.float64)
+    target_vec = target_vec / np.linalg.norm(target_vec)
+    earth_dir_I = -true_state.position / np.linalg.norm(true_state.position)
+    body_dir_I = qu.rotate_vectors(qu.quaternion(*true_state.quat), BODY_FORWARD_VEC3)
+    body_dir_I = body_dir_I / np.linalg.norm(body_dir_I)
+    sun_unit_I = sun_dir_I / np.linalg.norm(sun_dir_I)
+
+    boresight_angle = np.rad2deg(np.arccos(np.clip(target_vec @ body_dir_I, -1.0, 1.0)))
+    sun_angle = np.rad2deg(np.arccos(np.clip(target_vec @ sun_unit_I, -1.0, 1.0)))
+    earth_angle = np.rad2deg(np.arccos(np.clip(target_vec @ earth_dir_I, -1.0, 1.0)))
+    r = np.linalg.norm(true_state.position)
+    earth_occlusion_half_angle_deg = np.rad2deg(np.arcsin(np.clip(R_EARTH_M / r, -1.0, 1.0)))
+
+    return {
+        "boresight_angle_deg": float(boresight_angle),
+        "sun_angle_deg": float(sun_angle),
+        "earth_angle_deg": float(earth_angle),
+        "sun_keepout_margin_deg": float(sun_angle - sun_keepout_deg),
+        "earth_keepout_margin_deg": float(earth_angle - earth_occlusion_half_angle_deg - earth_margin_deg),
+    }

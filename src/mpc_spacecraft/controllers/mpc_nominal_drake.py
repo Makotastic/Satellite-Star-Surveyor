@@ -74,6 +74,8 @@ class NominalMPC:
 
         self.solver = OsqpSolver()
         self.w_slack = 10e4
+        self.last_solve_success = False
+        self.last_fallback_used = False
 
     # -------------------------------------------------------------------------
     # Nominal trajectory builder (for linearization & warm-start)
@@ -377,6 +379,8 @@ class NominalMPC:
 
             self.warm_start_x = None
             self.warm_start_u = None
+            self.last_solve_success = False
+            self.last_fallback_used = True
             return u_opt, x_opt, False
 
         # Save warm start for the next MPC call (absolute trajectories)
@@ -384,6 +388,8 @@ class NominalMPC:
         assert best_u_opt is not None
         self.warm_start_x = best_x_opt
         self.warm_start_u = best_u_opt
+        self.last_solve_success = True
+        self.last_fallback_used = False
 
         return best_u_opt, best_x_opt, True
 
@@ -425,3 +431,4 @@ class NominalMPC:
             return np.zeros(self.control_dim)
 
         return u_opt[0]
+

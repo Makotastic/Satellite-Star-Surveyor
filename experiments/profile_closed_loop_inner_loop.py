@@ -231,11 +231,14 @@ def _run_profile_once(args: argparse.Namespace, *, run_index: int) -> tuple[Prof
         loop_start_ns = perf_counter_ns() if measuring else 0
 
         with profiler.section("estimator.tick") if measuring else _null_section():
-            estimated_state = (
-                estimator.tick(clock.current_time, clock.last_dt, sim_state)
-                if clock.last_dt != 0
-                else sim_state.sensor_rigid_body
-            )
+            if clock.last_dt != 0:
+                estimated_state, estimator_used_star_tracker, estimator_used_gnss = estimator.tick(
+                    clock.current_time, clock.last_dt, sim_state
+                )
+            else:
+                estimated_state = sim_state.sensor_rigid_body
+                estimator_used_star_tracker = False
+                estimator_used_gnss = False
 
         with profiler.section("mpc_update_check") if measuring else _null_section():
             mpc_update = previous_mpc_guidance_update is None or (
@@ -279,6 +282,11 @@ def _run_profile_once(args: argparse.Namespace, *, run_index: int) -> tuple[Prof
                         guidance_mode_name=mode.name if mode is not None else "UNKNOWN",
                         is_complete=bool(is_complete),
                         mpc_updated=bool(mpc_update),
+                        mpc_solve_success=bool(getattr(mpc, "last_solve_success", False)),
+                        mpc_fallback_used=bool(getattr(mpc, "last_fallback_used", False)),
+                        estimator_used_gnss=bool(estimator_used_gnss),
+                        estimator_used_star_tracker=bool(estimator_used_star_tracker),
+                        mekf_covariance_diag=np.diag(estimator.mekf.P).copy(),
                         current_target_idx=getattr(planner, "_current_target_idx", None),
                         target_obs_times=planner._targets["obs_time"].to_numpy().copy(),
                     )

@@ -36,7 +36,9 @@ class StateEstimationSimHandler:
         self._star_tracker_period = star_tracker_measurement_period
         self._past_star_tracker_measurement = None
 
-    def tick(self, current_time: float, past_dt: float, state: FullSimState) -> SensorRigidBodyState:
+    def tick(
+        self, current_time: float, past_dt: float, state: FullSimState
+    ) -> tuple[SensorRigidBodyState, bool, bool]:
         measurement = self.measurementGen.generate_state_measurement(state, past_dt)
 
         is_time_reset = self._has_time_moved_backward(current_time)
@@ -69,7 +71,7 @@ class StateEstimationSimHandler:
         if use_star_tracker:
             self._past_star_tracker_measurement = current_time
 
-        return estimated_state
+        return estimated_state, use_star_tracker, use_gnss
 
     def _has_time_moved_backward(self, current_time: float) -> bool:
         past_measurement_times = (

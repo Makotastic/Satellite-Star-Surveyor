@@ -48,14 +48,7 @@ experiments/models/*.pth
 experiments/models/*.pt
 
 # Results
-experiments/results/*.png
-experiments/results/*.pdf
-reports/figures/*.png
-reports/figures/*.pdf
-
-reports/*
-!reports/*.pdf
-!reports/*.tex
+experiments/results/*
 
 # OS
 .DS_Store

@@ -5,11 +5,13 @@ from .metrics import (
     compute_quaternion_trajectory_errors, compute_velocity_errors,
     compute_performance_index, compare_controllers
 )
-from .plotting import (
-    plot_state_trajectory, plot_control_inputs, plot_comparison,
-    plot_quaternion_trajectory, plot_angular_velocity,
-    plot_performance_comparison, plot_error_comparison,
-    plot_all_comparisons
+from .mission_results import (
+    MissionArtifactPaths,
+    build_derived_timeseries,
+    build_mission_analysis_artifact,
+    compute_mission_summary,
+    quaternion_angle_error_deg,
+    save_mission_artifact,
 )
 from .stability import analyze_closed_loop_stability, compute_lyapunov_function
 
@@ -21,14 +23,12 @@ __all__ = [
     "compute_velocity_errors",
     "compute_performance_index",
     "compare_controllers",
-    "plot_state_trajectory",
-    "plot_control_inputs",
-    "plot_comparison",
-    "plot_quaternion_trajectory",
-    "plot_angular_velocity",
-    "plot_performance_comparison",
-    "plot_error_comparison",
+    "MissionArtifactPaths",
+    "build_derived_timeseries",
+    "build_mission_analysis_artifact",
+    "compute_mission_summary",
+    "quaternion_angle_error_deg",
+    "save_mission_artifact",
     "analyze_closed_loop_stability",
     "compute_lyapunov_function",
-    "plot_all_comparisons"
 ]
